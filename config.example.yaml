@@ -1,0 +1,48 @@
+version: 1
+
+settings:
+  # Stable identifier written into every backup ID and manifest.
+  host_id: server-01
+  state_directory: /var/lib/backfort
+  temp_directory: /var/tmp/backfort
+  lock_file: /run/backfort.lock
+  min_free_mb: 512
+
+destinations:
+  - name: local
+    type: local
+    path: /var/backups/backfort
+
+jobs:
+  - name: important-files
+    source:
+      type: files
+      paths:
+        - /etc/nginx
+        - /var/www
+      exclude:
+        - "*.log"
+        - "*/cache/*"
+        - "*/node_modules/*"
+      follow_symlinks: false
+
+    destinations: [local]
+
+    compression:
+      method: gzip       # gzip | zstd | none
+      level: 6
+
+    encryption:
+      method: none       # none | age | gpg
+      # age encryption:
+      # recipient_env: BACKFORT_AGE_RECIPIENT
+      # identity_file_env: BACKFORT_AGE_IDENTITY_FILE
+      # gpg symmetric encryption:
+      # password_env: BACKFORT_GPG_PASSWORD
+
+    retention:
+      keep_last: 3
+      keep_daily: 7
+      keep_weekly: 4
+      keep_monthly: 6
+
