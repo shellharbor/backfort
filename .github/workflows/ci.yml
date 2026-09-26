@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    name: Bash and smoke test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends shellcheck python3
+          go install github.com/mikefarah/yq/v4@v4.45.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Check shell syntax
+        run: bash -n backfort.sh tests/*.sh
+
+      - name: Validate example YAML
+        run: |
+          for file in examples/*.yaml; do
+            yq eval '.' "$file" >/dev/null
+          done
+
+      - name: Run ShellCheck
+        run: shellcheck backfort.sh tests/*.sh
+
+      - name: Run smoke test
+        run: bash tests/smoke.sh
+
+      - name: Run quick backup test
+        run: bash tests/quick.sh
+
+      - name: Run rclone smoke test
+        run: bash tests/rclone-smoke.sh
+
+      - name: Run Docker Compose smoke test
+        run: bash tests/compose-smoke.sh
+
+      - name: Run encryption and signing smoke test
+        run: bash tests/crypto-smoke.sh
+
+      - name: Run watchdog test
+        run: bash tests/watchdog.sh
+
+      - name: Run backup diff test
+        run: bash tests/diff.sh
+
+      - name: Run pinned backup test
+        run: bash tests/pinned.sh
+
+      - name: Run date-range deletion test
+        run: bash tests/delete-period.sh
+
+      - name: Run interactive restore pick test
+        run: bash tests/pick.sh
+
+      - name: Run notification test
+        run: bash tests/notify.sh

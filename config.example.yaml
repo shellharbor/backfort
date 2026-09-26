@@ -8,10 +8,65 @@ settings:
   lock_file: /run/backfort.lock
   min_free_mb: 512
 
+# Optional dead man's switch configuration. Without this block, pass
+# `watchdog --max-age HOURS`; omit `jobs` to check every configured job.
+# watchdog:
+#   max_age_hours: 26
+#   jobs: [important-files]
+
+# Notifications are optional. Secret values stay in the environment; the YAML
+# contains only their variable names. Delivery warnings never change a backup
+# or recovery command's exit status.
+# notifications:
+#   enabled: true
+#   defaults:
+#     events: [failure, partial, recovery, watchdog]
+#     antiflood_hours: 4
+#     digest: off                  # off | daily
+#   channels:
+#     - name: ops-telegram
+#       type: telegram
+#       token_env: BACKFORT_TG_TOKEN
+#       chat_id_env: BACKFORT_TG_CHAT
+#       thread_id_env: BACKFORT_TG_THREAD  # optional
+#       events: [failure, watchdog]
+#       # Text-channel templates replace a default event message. Values are
+#       # redacted and Telegram-escaped; literal <b>/<code> here is trusted.
+#       templates:
+#         failure: "<b>💥 {{job}}</b>\n{{error}}\n<code>{{restore_hint}}</code>"
+#         watchdog: "No backup for {{job}}: {{last_backup_age}} > {{threshold}}"
+#     - name: monitoring-ntfy
+#       type: ntfy
+#       server: https://ntfy.example.net
+#       topic_env: BACKFORT_NTFY_TOPIC
+#       priority: urgent            # min | low | default | high | max | urgent
+#     - name: ci-webhook
+#       type: webhook
+#       url_env: BACKFORT_WEBHOOK_URL
+#       headers_env: BACKFORT_WEBHOOK_HEADERS  # optional, Header: value lines
+#       events: [success, failure, recovery]
+#     - name: mail-ops
+#       type: smtp
+#       host: smtp.example.net
+#       port: 587
+#       starttls: true
+#       username_env: BACKFORT_SMTP_USER
+#       password_env: BACKFORT_SMTP_PASSWORD
+#       to: [ops@example.net]
+#       from: backfort@example.net
+
 destinations:
   - name: local
     type: local
     path: /var/backups/backfort
+
+  # rclone remote names are configured outside this file with `rclone config`.
+  # AWS S3, DigitalOcean Spaces, Vultr Object Storage and Cloudflare R2 are
+  # S3-compatible choices; use the bucket as the first path component.
+  # - name: s3-offsite
+  #   type: rclone
+  #   remote: company-s3
+  #   path: backups-bucket/backfort/server-01
 
 jobs:
   - name: important-files
@@ -27,6 +82,8 @@ jobs:
       follow_symlinks: false
 
     destinations: [local]
+    success:
+      min_copies: 1      # Raise to 2 after adding an offsite destination.
 
     compression:
       method: gzip       # gzip | zstd | none
@@ -34,15 +91,28 @@ jobs:
 
     encryption:
       method: none       # none | age | gpg
-      # age encryption:
+      # age encryption: use one recipient_env for compatibility, or multiple
+      # recipients_env values so more than one recovery key can decrypt.
       # recipient_env: BACKFORT_AGE_RECIPIENT
+      # recipients_env:
+      #   - BACKFORT_AGE_RECIPIENT_PRIMARY
+      #   - BACKFORT_AGE_RECIPIENT_RECOVERY
       # identity_file_env: BACKFORT_AGE_IDENTITY_FILE
       # gpg symmetric encryption:
       # password_env: BACKFORT_GPG_PASSWORD
 
+    signing:
+      method: none       # none | minisign
+      # minisign detached signature (optional):
+      # secret_key_env: BACKFORT_MINISIGN_SECRET_KEY
+      # public_key_env: BACKFORT_MINISIGN_PUBLIC_KEY
+
     retention:
+      # Pins are runtime markers: use `backfort.sh pin BACKUP_ID`, not config.
       keep_last: 3
       keep_daily: 7
       keep_weekly: 4
       keep_monthly: 6
+      # Optional hard expiry for unpinned copies. It overrides GFS retention.
+      # max_age_days: 90
 

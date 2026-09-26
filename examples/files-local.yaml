@@ -1,0 +1,42 @@
+# Valid Backfort 0.3 configuration: a local recovery copy of web application
+# files and nginx configuration. Replace every example path before use.
+
+version: 1
+
+settings:
+  host_id: web-01
+  state_directory: /var/lib/backfort
+  temp_directory: /var/tmp/backfort
+  lock_file: /run/backfort.lock
+  min_free_mb: 1024
+
+destinations:
+  - name: local-recovery
+    type: local
+    path: /var/backups/backfort
+
+jobs:
+  - name: web-files
+    source:
+      type: files
+      paths:
+        - /etc/nginx
+        - /srv/web-app
+      exclude:
+        - "*.log"
+        - "*/cache/*"
+        - "*/node_modules/*"
+      follow_symlinks: false
+
+    destinations: [local-recovery]
+    success:
+      min_copies: 1
+
+    compression: {method: zstd, level: 6}
+    encryption: {method: none}
+
+    retention:
+      keep_last: 7
+      keep_daily: 14
+      keep_weekly: 8
+      keep_monthly: 12

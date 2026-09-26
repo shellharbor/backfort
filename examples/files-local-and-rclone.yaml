@@ -1,0 +1,48 @@
+# Valid Backfort 0.3 configuration: keep one fast local copy and require one
+# independently published offsite copy. Configure `company-s3` with rclone
+# before running doctor. For S3, `company-backups` is the bucket name.
+
+version: 1
+
+settings:
+  host_id: app-01
+  state_directory: /var/lib/backfort
+  temp_directory: /var/tmp/backfort
+  lock_file: /run/backfort.lock
+  min_free_mb: 2048
+
+destinations:
+  - name: local-recovery
+    type: local
+    path: /var/backups/backfort
+
+  - name: s3-offsite
+    type: rclone
+    remote: company-s3
+    path: company-backups/backfort/app-01
+
+jobs:
+  - name: application-files
+    source:
+      type: files
+      paths:
+        - /etc/app
+        - /srv/application
+      exclude:
+        - "*.log"
+        - "*/tmp/*"
+        - "*/cache/*"
+      follow_symlinks: false
+
+    destinations: [local-recovery, s3-offsite]
+    success:
+      min_copies: 2
+
+    compression: {method: zstd, level: 6}
+    encryption: {method: none}
+
+    retention:
+      keep_last: 7
+      keep_daily: 14
+      keep_weekly: 8
+      keep_monthly: 12

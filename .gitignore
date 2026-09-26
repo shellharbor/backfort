@@ -88,3 +88,14 @@ release/
 
 *.partial.*
 .backfort-test/
+
+.ai/
+.codex/
+.cursor/
+.windsurfrules
+AGENTS.md
+AI_CONTEXT.md
+CLAUDE.md
+GEMINI.md
+KIMI.md
+MANUS.md

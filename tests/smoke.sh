@@ -75,4 +75,57 @@ AFTER_DRY_RUN=$(find "$BACKUP_DIRECTORY" -maxdepth 1 -name '*.complete' | wc -l)
 AFTER_PRUNE=$(find "$BACKUP_DIRECTORY" -maxdepth 1 -name '*.complete' | wc -l)
 [[ $AFTER_PRUNE -eq 2 ]]
 
+# A failed destination must not stop another independent destination from
+# receiving a completed backup. Doctor remains strict and catches the bad
+# destination before a scheduled run.
+PARTIAL_BACKUP_DIRECTORY="$TEST_DIRECTORY/partial-backups"
+BLOCKING_FILE="$TEST_DIRECTORY/not-a-directory"
+PARTIAL_CONFIG_FILE="$TEST_DIRECTORY/partial-config.yaml"
+printf 'not a directory\n' >"$BLOCKING_FILE"
+
+cat >"$PARTIAL_CONFIG_FILE" <<EOF
+version: 1
+settings:
+  host_id: partial-host
+  state_directory: "$STATE_DIRECTORY"
+  temp_directory: "$TEMP_DIRECTORY"
+  lock_file: "$TEST_DIRECTORY/partial.lock"
+  min_free_mb: 1
+destinations:
+  - name: good
+    type: local
+    path: "$PARTIAL_BACKUP_DIRECTORY"
+  - name: blocked
+    type: local
+    path: "$BLOCKING_FILE/unavailable"
+jobs:
+  - name: partial
+    source:
+      type: files
+      paths: ["$SOURCE_DIRECTORY"]
+      exclude: ["*.log"]
+      follow_symlinks: false
+    destinations: [good, blocked]
+    compression: {method: gzip, level: 6}
+    encryption: {method: none}
+    retention: {keep_last: 1, keep_daily: 0, keep_weekly: 0, keep_monthly: 0}
+EOF
+
+if "$PROJECT_DIRECTORY/backfort.sh" -c "$PARTIAL_CONFIG_FILE" run; then
+  printf 'expected partial backup run to return exit code 1\n' >&2
+  exit 1
+else
+  PARTIAL_RESULT=$?
+fi
+[[ $PARTIAL_RESULT -eq 1 ]]
+[[ $(find "$PARTIAL_BACKUP_DIRECTORY" -maxdepth 1 -name '*.complete' | wc -l) -eq 1 ]]
+
+if "$PROJECT_DIRECTORY/backfort.sh" -c "$PARTIAL_CONFIG_FILE" doctor; then
+  printf 'expected doctor to reject an unusable destination\n' >&2
+  exit 1
+else
+  DOCTOR_RESULT=$?
+fi
+[[ $DOCTOR_RESULT -eq 2 ]]
+
 printf 'Backfort smoke test passed.\n'
