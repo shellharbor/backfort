@@ -3,7 +3,7 @@
 All notable changes are documented here. Backfort follows semantic versioning
 once a release is tagged.
 
-## Unreleased 0.5.0
+## 1.0.0
 
 - Added `retention.min_keep`, a positive per-destination recovery floor that
   defaults to one newest ordinary completed copy. GFS rotation and

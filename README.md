@@ -61,10 +61,10 @@ them, publishes each completed version atomically to one or more local or
 rclone destinations, and exits. Scheduling belongs to cron or a systemd timer;
 Backfort does not run a daemon.
 
-Version 0.5 adds the first Docker Compose recovery adapter. A job can archive
-explicit Compose files, selected named volumes, explicit bind mounts and
-engine-aware database dumps, then publish the resulting bundle through the
-same local and rclone destinations as a file backup.
+Backfort 1.0.0 is the first stable release. It can archive explicit Compose
+files, selected named volumes, explicit bind mounts and engine-aware database
+dumps, then publish the resulting bundle through the same local and rclone
+destinations as a file backup.
 
 ## Features
 
@@ -1360,7 +1360,7 @@ started manually from the Actions tab when diagnosing an environment-specific
 failure; Release metadata intentionally starts only when a `vX.Y.Z` tag is
 pushed.
 
-## Version 0.5 limitations
+## Version 1.0 limitations
 
 - Full backups only; no incremental mode or deduplication
 - No native S3, SSH or WebDAV destination; use rclone for supported remotes

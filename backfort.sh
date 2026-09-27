@@ -5,7 +5,7 @@ IFS=$'\n\t'
 LC_ALL=C
 umask 077
 
-readonly BACKFORT_VERSION="0.5.0-dev"
+readonly BACKFORT_VERSION="1.0.0"
 
 CONFIG_FILE="/etc/backfort/config.yaml"
 CONFIG_FILE_EXPLICIT=false
