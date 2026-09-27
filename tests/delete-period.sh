@@ -67,12 +67,13 @@ write_bundle() {
   printf 'fixture payload\n' >"$destination/$backup_id.tar.gz"
   printf 'fixture checksum\n' >"$destination/$backup_id.sha256"
   cat >"$destination/$backup_id.metadata.json" <<EOF
-backup_id: "$backup_id"
-job: period
-created_at: "$created_at"
-payload_file: "$backup_id.tar.gz"
-signing:
-  method: none
+{
+  "backup_id": "$backup_id",
+  "job": "period",
+  "created_at": "$created_at",
+  "payload_file": "$backup_id.tar.gz",
+  "signing": {"method": "none"}
+}
 EOF
   printf '%s\n' "$backup_id" >"$destination/$backup_id.complete"
 }
@@ -99,7 +100,10 @@ done
 grep -Fq "backup_id=$JANUARY_FIRST" "$TEST_DIRECTORY/plan.stderr"
 grep -Fq "backup_id=$JANUARY_LAST" "$TEST_DIRECTORY/plan.stderr"
 grep -Fq "backup_id=$JANUARY_PINNED reason=pinned" "$TEST_DIRECTORY/plan.stderr"
-! grep -Fq "backup_id=$FEBRUARY_FIRST" "$TEST_DIRECTORY/plan.stderr"
+if grep -Fq "backup_id=$FEBRUARY_FIRST" "$TEST_DIRECTORY/plan.stderr"; then
+  printf 'date-range plan unexpectedly included the February backup\n' >&2
+  exit 1
+fi
 [[ -f "$LOCAL_DIRECTORY/$JANUARY_FIRST.complete" ]]
 [[ -f "$REMOTE_DIRECTORY/archives/period/$JANUARY_LAST.complete" ]]
 

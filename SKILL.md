@@ -1,6 +1,6 @@
 ---
 name: backfort
-description: Implement, review, test, or document Backfort's Linux backup and recovery workflow, including YAML configuration, local and rclone destinations, Docker Compose, databases, recovery, retention, and notifications. Use for changes inside the Backfort repository; do not use for generic backup advice unrelated to this codebase.
+description: Implement, review, test, or document Backfort's Linux backup and recovery workflow, including YAML configuration, lifecycle hooks, local and rclone destinations, Docker Compose backups and recovery assistance, databases, retention, notifications, and Prometheus textfile metrics. Use for changes inside the Backfort repository; do not use for generic backup advice unrelated to this codebase.
 metadata:
   short-description: Maintain the Backfort backup tool
 ---
@@ -46,6 +46,10 @@ product sources:
 - Docker Compose backups are explicit. Never infer files, volumes, bind mounts
   or database services from an image or a Compose file. Database volumes do not
   replace logical engine dumps.
+- `restore-compose` is staged by default. Its optional database import requires
+  an explicit target project and both `--apply --confirm`; it must not deploy
+  project files, create or restore volumes, start services, apply PostgreSQL
+  global roles, or guess MS SQL/Oracle recovery.
 
 ## Keep secrets and shell boundaries safe
 
@@ -57,6 +61,9 @@ product sources:
 - Do not use `eval`, template-driven shell execution, or user-controlled
   `bash -c`/`sh -c`. Quote every shell expansion and retain the existing
   allowlist-based command construction.
+- Hooks are executable paths with literal argument arrays, never shell command
+  strings. Preserve their ownership/mode validation, scrubbed environment, and
+  idempotent post-cleanup contract; do not pass Backfort secrets into hooks.
 - rclone publishing uses individual object operations, never a broad `sync`.
   Remote deletion must preserve the commit-marker ordering that prevents a
   partial deletion from appearing recoverable.
@@ -69,8 +76,11 @@ product sources:
 | --- | --- |
 | CLI command or option | parser, `usage`, validation, command implementation, focused `tests/*.sh`, README and Wiki command examples |
 | YAML schema or default | validator, `config.example.yaml`, relevant `examples/*.yaml`, tests, README and Wiki configuration pages |
+| Prometheus metrics | schema and readiness validation, atomic textfile writer, `tests/metrics.sh`, README, `Configuration`, `Monitoring and Metrics`, and troubleshooting Wiki pages |
+| Lifecycle hook | validator and preflight, hook execution and signal cleanup, `tests/hooks.sh`, README, `Configuration`, and `Automation-and-Notifications` Wiki pages |
+| GitHub automation or badge | `.github/workflows/`, `.github/dependabot.yml`, README badges, `CHANGELOG.md`, and Wiki maintainer guidance; never add a badge without its real workflow or public service |
 | Local/rclone bundle behavior | atomic publish, list/verify/restore/prune/delete behavior, smoke tests, recovery and storage docs |
-| Compose or database adapter | Compose validation, fake Docker test, recovery instructions, `Docker-Compose-and-Databases` and `Restore-and-Verification` Wiki pages |
+| Compose or database adapter | Compose validation, fake Docker test, recovery instructions, `Docker-Compose-and-Databases`, `Compose-Migration`, and `Restore-and-Verification` Wiki pages |
 | Security, encryption, signing or notifications | validation, negative tests, redaction/log review, README and relevant Wiki safety/automation pages |
 | GitHub community or disclosure policy | `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, README links, and this skill when routing changes |
 
@@ -91,11 +101,18 @@ bash tests/smoke.sh
 ```
 
 Run the specialized test when its surface changes: `quick.sh`,
-`rclone-smoke.sh`, `compose-smoke.sh`, `crypto-smoke.sh`, `watchdog.sh`,
-`diff.sh`, `pinned.sh`, `delete-period.sh`, `pick.sh`, or `notify.sh`.
-CI provides Mike Farah `yq` v4, ShellCheck and Python on Ubuntu. If a local
-dependency is unavailable, do not install it without authorization; report the
-exact skipped check and residual risk.
+`rclone-smoke.sh`, `compose-smoke.sh`, `restore-compose.sh`,
+`crypto-smoke.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
+`delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, or `metrics.sh`.
+For release stabilization, also verify direct execution from a clean Linux
+checkout: `backfort.sh` and executable test adapters must retain mode `0755`.
+CI provides Mike Farah `yq` v4, ShellCheck and Python on Ubuntu; generated JSON
+filters must use syntax supported by that version. If a local dependency is
+unavailable, do not install it without authorization; report the exact skipped
+check and residual risk. CI also checks Bash 4.3 parsing; CodeQL and OpenSSF
+Scorecard scan the GitHub automation, while the release metadata workflow
+requires a `vX.Y.Z` tag to match a non-development CLI version and Changelog
+heading.
 
 ## Maintain this skill
 

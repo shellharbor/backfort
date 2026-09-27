@@ -22,11 +22,17 @@ layout, use `sudo /opt/backfort/backfort.sh`; from a cloned checkout, use
    storage through rclone.
 4. [Restore and Verification](Restore-and-Verification) — prove a backup is
    usable before an incident.
+5. [Monitoring and Metrics](Monitoring-and-Metrics) — expose run outcomes to
+   Prometheus and add independent freshness checks.
 
 For immediate work without preparing YAML first, use
 [Quick Backups](Quick-Backups). For application stacks, read
 [Docker Compose and Databases](Docker-Compose-and-Databases) before backing up
 a database volume.
+
+Moving an application to another host? Follow the explicit
+[Compose Migration](Compose-Migration) runbook rather than treating a volume
+archive as an automatic in-place server transfer.
 
 ## Project community
 
@@ -36,6 +42,18 @@ The repository also maintains its GitHub contribution and safety documents:
 [Code of Conduct](https://github.com/shellharbor/backfort/blob/main/CODE_OF_CONDUCT.md),
 and [Support](https://github.com/shellharbor/backfort/blob/main/SUPPORT.md).
 Never place a vulnerability report or secret in a public issue.
+
+## Repository automation
+
+Every push and pull request runs the Linux regression suite, ShellCheck, YAML
+example validation, and a Bash 4.3 syntax gate. A separate Documentation
+workflow checks local Markdown links across the README, Wiki sources, examples,
+and community documents, plus whitespace in changed files. CodeQL reviews
+GitHub Actions workflow definitions;
+OpenSSF Scorecard publishes supply-chain findings; Dependabot proposes grouped
+weekly GitHub Actions updates. A `vX.Y.Z` tag is accepted only when the CLI
+version and the matching Changelog heading are release-ready. The repository
+README links to the live workflow results.
 
 ## The safety model
 

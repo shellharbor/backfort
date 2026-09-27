@@ -81,6 +81,7 @@ SIGNATURE_FILE="$BACKUP_DIRECTORY/$BACKUP_ID.minisig"
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" verify latest --job crypto --full
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" restore latest --job crypto --to "$RESTORE_DIRECTORY"
 diff -r "$SOURCE_DIRECTORY" "$RESTORE_DIRECTORY$SOURCE_DIRECTORY"
+grep -qx decrypt "$BACKFORT_FAKE_AGE_LOG"
 
 printf 'tampered signature\n' >"$SIGNATURE_FILE"
 if "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" verify latest --job crypto --quick; then

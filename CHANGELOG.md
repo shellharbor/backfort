@@ -3,8 +3,30 @@
 All notable changes are documented here. Backfort follows semantic versioning
 once a release is tagged.
 
-## Unreleased 0.3.0
+## Unreleased 0.5.0
 
+- Added `restore-compose` for verified, staged Docker Compose recovery. It
+  prints recovery actions by default and can import PostgreSQL, MySQL, and
+  MariaDB logical dumps into an existing running target project only with
+  explicit `--project-dir --apply --confirm` safeguards. It never deploys
+  files, restores volumes, starts services, applies PostgreSQL global roles, or
+  guesses MS SQL/Oracle vendor recovery.
+- Added optional Prometheus node_exporter textfile metrics for each saved job,
+  with atomically replaced per-job files, stable low-cardinality labels, run
+  status/duration/size/copy gauges, strict readiness checks, and non-fatal
+  runtime write warnings.
+- Added a GitHub Documentation workflow that checks local Markdown links across
+  the README, Wiki sources, examples, and community files, plus whitespace in
+  changed files.
+  CI and CodeQL now support manual dispatch and concurrency control; Dependabot
+  groups weekly GitHub Actions updates into reviewable pull requests.
+- Added GitHub Actions coverage for Bash 4.3 syntax compatibility, CodeQL,
+  OpenSSF Scorecard, tag-to-version release metadata validation, and weekly
+  GitHub Actions dependency updates through Dependabot.
+- Added safe per-job `hooks.pre` and `hooks.post` lifecycle scripts with
+  literal argument arrays, strict ownership/mode checks, a scrubbed hook
+  environment, dry-run planning, and best-effort cleanup after interrupted
+  backup work.
 - Added `quick PATH ... --to DESTINATION` for immediate file and directory
   backups without a prewritten YAML job, including excludes, local/rclone copy
   policy, and a saved non-secret recovery configuration.
@@ -44,6 +66,22 @@ once a release is tagged.
 - Added optional Minisign detached payload signatures, verified before the
   checksum during verification and restore.
 - Hardened symmetric GPG encryption with iterated SHA-512 S2K parameters.
+
+### Fixed
+
+- Made full verification and staged restore stream a materialized rclone
+  payload from its verified local temporary file instead of incorrectly passing
+  that local path back to `rclone cat`.
+- Restored successful preflight completion for ordinary file sources after all
+  destination safety checks pass.
+- Made the executable mode of the CLI and test adapters a CI-enforced release
+  invariant, so a fresh Linux checkout can invoke them directly.
+- Replaced unsupported `if` expressions in generated JSON with `yq` v4
+  compatible filters for Telegram topic IDs and `list --json` pin metadata.
+- Made the fake `age` adapter model streaming decryption, so the encryption
+  smoke test exercises the real restore data path.
+- Made fixture metadata with a `.json` extension valid JSON, matching the
+  production bundle format.
 
 ## 0.2.0
 

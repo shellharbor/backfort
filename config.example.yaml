@@ -14,6 +14,14 @@ settings:
 #   max_age_hours: 26
 #   jobs: [important-files]
 
+# Optional Prometheus node_exporter textfile collector output. Backfort writes
+# one atomically replaced, world-readable .prom file per saved job after `run`.
+# Create this directory separately; the Backfort account needs write access and
+# node_exporter needs read access. Metrics never include IDs, paths, or secrets.
+# metrics:
+#   prometheus:
+#     textfile_directory: /var/lib/node_exporter/textfile_collector
+
 # Notifications are optional. Secret values stay in the environment; the YAML
 # contains only their variable names. Delivery warnings never change a backup
 # or recovery command's exit status.
@@ -80,6 +88,17 @@ jobs:
         - "*/cache/*"
         - "*/node_modules/*"
       follow_symlinks: false
+
+    # Optional lifecycle hooks run only for `run` with this saved job. A hook
+    # is an executable file, never a shell command string. It must be owned by
+    # the account that runs Backfort and not writable by group or others.
+    # hooks:
+    #   pre:
+    #     path: /usr/local/lib/backfort/hooks/quiesce-application
+    #     args: [freeze]
+    #   post:
+    #     path: /usr/local/lib/backfort/hooks/quiesce-application
+    #     args: [unfreeze]
 
     destinations: [local]
     success:

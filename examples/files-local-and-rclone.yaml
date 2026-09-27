@@ -1,4 +1,4 @@
-# Valid Backfort 0.3 configuration: keep one fast local copy and require one
+# Valid Backfort 0.5 configuration: keep one fast local copy and require one
 # independently published offsite copy. Configure `company-s3` with rclone
 # before running doctor. For S3, `company-backups` is the bucket name.
 

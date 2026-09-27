@@ -1,0 +1,24 @@
+name: Release metadata
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify release version and tag
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify version, CLI, changelog, and tag
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          version="$(sed -n 's/^readonly BACKFORT_VERSION="\([^"]*\)"$/\1/p' backfort.sh)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "${GITHUB_REF_NAME}" == "v${version}" ]]
+          [[ "$(bash ./backfort.sh --version)" == "Backfort ${version}" ]]
+          grep -Fqx "## ${version}" CHANGELOG.md

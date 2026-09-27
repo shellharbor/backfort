@@ -61,12 +61,13 @@ write_bundle() {
   printf 'fixture payload\n' >"$destination/$backup_id.tar"
   printf 'fixture checksum\n' >"$destination/$backup_id.sha256"
   cat >"$destination/$backup_id.metadata.json" <<EOF
-backup_id: "$backup_id"
-job: pinned
-created_at: "$created_at"
-payload_file: "$backup_id.tar"
-signing:
-  method: none
+{
+  "backup_id": "$backup_id",
+  "job": "pinned",
+  "created_at": "$created_at",
+  "payload_file": "$backup_id.tar",
+  "signing": {"method": "none"}
+}
 EOF
   printf '%s\n' "$backup_id" >"$destination/$backup_id.complete"
 }
@@ -78,12 +79,13 @@ write_incomplete_bundle() {
   printf 'incomplete payload\n' >"$destination/$backup_id.tar"
   printf 'incomplete checksum\n' >"$destination/$backup_id.sha256"
   cat >"$destination/$backup_id.metadata.json" <<EOF
-backup_id: "$backup_id"
-job: pinned
-created_at: "2025-01-06T00:00:00Z"
-payload_file: "$backup_id.tar"
-signing:
-  method: none
+{
+  "backup_id": "$backup_id",
+  "job": "pinned",
+  "created_at": "2025-01-06T00:00:00Z",
+  "payload_file": "$backup_id.tar",
+  "signing": {"method": "none"}
+}
 EOF
 }
 
@@ -117,7 +119,7 @@ grep -Fq 'event=pin-already-pinned' "$TEST_DIRECTORY/idempotent.stderr"
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" list --json >"$TEST_DIRECTORY/list.json"
 [[ $(yq eval '[.[] | select(has("pinned") | not)] | length' "$TEST_DIRECTORY/list.json") -eq 0 ]]
 [[ $(yq eval ".[] | select(.backup_id == \"$PINNED_ID\" and .destination == \"primary\") | .pinned" "$TEST_DIRECTORY/list.json") == true ]]
-[[ $(yq eval ".[] | select(.backup_id == \"$PINNED_ID\" and .destination == \"primary\") | .pinned_reason" "$TEST_DIRECTORY/list.json") == 'pre-migration freeze' ]]
+[[ $(yq eval -r ".[] | select(.backup_id == \"$PINNED_ID\" and .destination == \"primary\") | .pinned_reason" "$TEST_DIRECTORY/list.json") == 'pre-migration freeze' ]]
 [[ $(yq eval ".[] | select(.backup_id == \"$FIFTH_ID\" and .destination == \"primary\") | has(\"pinned_reason\")" "$TEST_DIRECTORY/list.json") == false ]]
 
 # Pinned copies are reported separately in a plan and do not consume either
@@ -191,7 +193,11 @@ grep -Fq "backup_id=$ORPHAN_ID message=orphaned-marker" "$TEST_DIRECTORY/doctor.
 [[ ! -e $PRIMARY_DIRECTORY/$ORPHAN_ID.pinned ]]
 
 # max_age_days is a hard expiry for ordinary copies, even when keep_last would
-# retain them. Pins remain the explicit operator-controlled exception.
+# retain them. Recreate the old unpinned fixture because the preceding ordinary
+# GFS prune is expected to remove it before this independent age-policy check.
+# Pins remain the explicit operator-controlled exception.
+write_bundle "$PRIMARY_DIRECTORY" "$MIRROR_ID" '2024-01-01T00:00:00Z'
+write_bundle "$REPLICA_DIRECTORY" "$MIRROR_ID" '2024-01-01T00:00:00Z'
 yq eval '.jobs[0].retention.keep_last = 99 | .jobs[0].retention.max_age_days = 1' -i "$CONFIG_FILE"
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" prune --dry-run \
   >"$TEST_DIRECTORY/max-age-plan.stdout" 2>"$TEST_DIRECTORY/max-age-plan.stderr"

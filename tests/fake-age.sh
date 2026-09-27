@@ -22,6 +22,17 @@ while (($# > 0)); do
   esac
 done
 
-[[ -n $mode && -n $output && -n $input ]] || exit 64
-cp -- "$input" "$output"
+case "$mode" in
+  encrypt)
+    [[ -n $output && -n $input ]] || exit 64
+    cp -- "$input" "$output"
+    ;;
+  decrypt)
+    [[ -z $output && -z $input ]] || exit 64
+    cat
+    ;;
+  *)
+    exit 64
+    ;;
+esac
 printf '%s\n' "$mode" >>"$BACKFORT_FAKE_AGE_LOG"

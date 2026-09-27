@@ -3,9 +3,14 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   shell:
@@ -13,6 +18,18 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify executable entrypoints from a clean checkout
+        run: |
+          for file in \
+            backfort.sh \
+            scripts/install.sh \
+            tests/fake-age.sh \
+            tests/fake-docker.sh \
+            tests/fake-minisign.sh \
+            tests/fake-rclone.sh; do
+            test -x "$file"
+          done
 
       - name: Install test dependencies
         run: |
@@ -23,6 +40,14 @@ jobs:
 
       - name: Check shell syntax
         run: bash -n backfort.sh tests/*.sh
+
+      - name: Check Bash 4.3 syntax compatibility
+        run: |
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --workdir /workspace \
+            bash:4.3.48 \
+            bash -c '[[ "$BASH_VERSION" == 4.3.* ]] && bash -n backfort.sh tests/*.sh'
 
       - name: Validate example YAML
         run: |
@@ -45,6 +70,9 @@ jobs:
       - name: Run Docker Compose smoke test
         run: bash tests/compose-smoke.sh
 
+      - name: Run Compose restore assistant test
+        run: bash tests/restore-compose.sh
+
       - name: Run encryption and signing smoke test
         run: bash tests/crypto-smoke.sh
 
@@ -65,3 +93,9 @@ jobs:
 
       - name: Run notification test
         run: bash tests/notify.sh
+
+      - name: Run lifecycle hooks test
+        run: bash tests/hooks.sh
+
+      - name: Run Prometheus metrics test
+        run: bash tests/metrics.sh

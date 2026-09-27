@@ -6,9 +6,11 @@
 - [Destinations and S3](Destinations-and-S3)
 - [Quick Backups](Quick-Backups)
 - [Docker Compose and Databases](Docker-Compose-and-Databases)
+- [Compose Migration](Compose-Migration)
 - [Restore and Verification](Restore-and-Verification)
 - [Retention, Pins and Deletion](Retention-Pins-and-Deletion)
 - [Automation and Notifications](Automation-and-Notifications)
+- [Monitoring and Metrics](Monitoring-and-Metrics)
 - [Troubleshooting](Troubleshooting)
 
 ---

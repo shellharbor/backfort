@@ -132,9 +132,20 @@ grep -q 'mysql logical dump' "$RESTORE_DIRECTORY/databases/mysql/crm.sql"
 grep -q 'mysql logical dump' "$RESTORE_DIRECTORY/databases/mariadb/crm.sql"
 grep -q 'mssql native backup' "$RESTORE_DIRECTORY/databases/mssql/crm.bak"
 grep -q 'oracle data pump export' "$RESTORE_DIRECTORY/databases/oracle/full.dmp"
-! grep -q 'test-.*-secret' "$BACKFORT_FAKE_DOCKER_LOG"
-[[ ! -e "$FAKE_DOCKER_ROOT/containers/fake-mssql/var/opt/mssql/backups" ]]
-[[ ! -e "$FAKE_DOCKER_ROOT/containers/fake-oracle/opt/oracle/admin/FREE/dpdump" ]]
+if grep -q 'test-.*-secret' "$BACKFORT_FAKE_DOCKER_LOG"; then
+  printf 'test secret leaked into the fake Docker log\n' >&2
+  exit 1
+fi
+if find "$FAKE_DOCKER_ROOT/containers/fake-mssql/var/opt/mssql/backups" \
+  -type f -name 'backfort_*.bak' -print -quit | grep -q .; then
+  printf 'temporary MS SQL backup file was not cleaned up\n' >&2
+  exit 1
+fi
+if find "$FAKE_DOCKER_ROOT/containers/fake-oracle/opt/oracle/admin/FREE/dpdump" \
+  -type f \( -name 'backfort_*.dmp' -o -name 'backfort_*.log' \) -print -quit | grep -q .; then
+  printf 'temporary Oracle export files were not cleaned up\n' >&2
+  exit 1
+fi
 
 QUICK_BACKUP_DIRECTORY="$TEST_DIRECTORY/quick-backups"
 QUICK_RESTORE_DIRECTORY="$TEST_DIRECTORY/quick-restore"

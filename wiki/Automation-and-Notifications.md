@@ -20,6 +20,20 @@ rotated log destination appropriate for the host.
 Keep `prune` separate from `run`: the least-privilege account used for creation
 need not automatically receive deletion rights for every cloud destination.
 
+For Prometheus textfile metrics emitted by these runs, see [Monitoring and
+Metrics](Monitoring-and-Metrics). The metric file is updated only after a real
+job attempt; it does not replace the independent backup-freshness `watchdog`.
+
+## Lifecycle-hook scheduling
+
+`hooks.pre` and `hooks.post` belong to a saved job and run only with
+`backfort.sh ... run`. They do not turn Backfort into a daemon and are not run
+by `doctor`, verification, restore, retention, or the `quick` commands. Use a
+hook for a bounded action such as putting an application into maintenance mode,
+freezing a filesystem, or releasing it after the archive pipeline. See
+[Configuration](Configuration#lifecycle-hooks) for the safe file, ownership,
+environment, failure, and signal contract.
+
 ## systemd example
 
 Create `/etc/systemd/system/backfort.service`:

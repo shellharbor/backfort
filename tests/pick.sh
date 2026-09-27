@@ -123,7 +123,10 @@ else
 fi
 [[ $EMPTY_RESULT -eq 3 ]]
 grep -Fq 'no completed backups for job empty' "$TEST_DIRECTORY/empty.stderr"
-! grep -Fq 'Restore #>' "$TEST_DIRECTORY/empty.stdout"
+if grep -Fq 'Restore #>' "$TEST_DIRECTORY/empty.stdout"; then
+  printf 'restore picker unexpectedly rendered choices for an empty job\n' >&2
+  exit 1
+fi
 
 if printf '99\nabc\n0\n' | BACKFORT_TEST_ASSUME_TTY=1 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" \
   restore --pick --job pick --to "$INVALID_DIRECTORY" \

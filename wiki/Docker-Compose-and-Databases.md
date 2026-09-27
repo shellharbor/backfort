@@ -115,7 +115,9 @@ to be set by the scheduler, systemd credential mechanism, or a secret manager.
 1. Restore the application files, bind mounts and named-volume archives.
 2. Start only dependencies needed for the target database, or create an empty
    database service.
-3. Import the logical SQL dump into a fresh database.
+3. Use `restore-compose` to stage the verified version and print its recovery
+   inventory. After reviewing and preparing an isolated target project, it can
+   explicitly import supported logical dumps.
 4. Start the rest of the Compose project and verify the application.
 
 A database dump is the authoritative database recovery artifact. The raw volume
@@ -123,5 +125,36 @@ is still valuable for incident investigation and for services that do not offer
 a logical dump, but restoring a live database directory across engine versions
 is risky.
 
+## Compose restore assistant
+
+Stage a completed Compose version into a new or empty directory and receive a
+machine-readable recovery inventory:
+
+```bash
+backfort.sh -c /etc/backfort/config.yaml \
+  restore-compose latest --job crm-production --to /srv/recovery/crm
+```
+
+The command performs normal signature/checksum verification first. It never
+copies recovered files to a deployment, creates a volume, starts a container,
+or imports a database merely because the backup contains one.
+
+Once a **different, prepared target project** has reviewed Compose files and
+secrets and has its database services running, allow one logical import with
+both explicit switches:
+
+```bash
+backfort.sh -c /etc/backfort/config.yaml \
+  restore-compose latest --job crm-production --to /srv/recovery/crm-import \
+  --project-dir /srv/crm-recovery --apply --confirm
+```
+
+The assistant runs `pg_restore` for custom PostgreSQL dumps, `psql` for plain
+PostgreSQL SQL, and `mysql`/`mariadb` for the matching SQL dumps. It keeps
+passwords in the configured environment variables and passes them only as
+container environment variables. It refuses an apply that includes MS SQL or
+Oracle; use the vendor recovery procedure for those native artifacts.
+
 See [Restore and Verification](Restore-and-Verification) for concrete import
-commands, and [Quick Backups](Quick-Backups) for a one-command Compose snapshot.
+commands, [Quick Backups](Quick-Backups) for a one-command Compose snapshot,
+and [Compose Migration](Compose-Migration) for a staged server move.

@@ -1,16 +1,65 @@
 # Backfort
 
-**Your last line of data defense.**
+> **Your last line of data defense.** Back up deliberately. Restore with
+> confidence.
+
+Backfort is a recovery-first backup tool for Linux servers. It creates an
+explicit, verified backup and exits—no daemon to babysit, no hidden discovery
+of files or databases, and no risky in-place restore switch.
+
+[![CI](https://github.com/shellharbor/backfort/actions/workflows/ci.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/ci.yml)
+[![Documentation](https://github.com/shellharbor/backfort/actions/workflows/documentation.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/documentation.yml)
+[![CodeQL](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/shellharbor/backfort/badge)](https://scorecard.dev/viewer/?uri=github.com/shellharbor/backfort)
+[![GitHub release](https://img.shields.io/github/v/release/shellharbor/backfort)](https://github.com/shellharbor/backfort/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Bash 4.3+](https://img.shields.io/badge/bash-4.3%2B-4EAA25?logo=gnubash&logoColor=white)](https://www.gnu.org/software/bash/)
+[![ShellCheck](https://img.shields.io/badge/lint-ShellCheck-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
+[![GitHub issues](https://img.shields.io/github/issues/shellharbor/backfort)](https://github.com/shellharbor/backfort/issues)
+[![GitHub stars](https://img.shields.io/github/stars/shellharbor/backfort?style=flat)](https://github.com/shellharbor/backfort/stargazers)
+
+**[Get started](#first-backup--durable-setup)** ·
+**[Examples](examples/README.md)** ·
+**[Compose migration](wiki/Compose-Migration.md)** ·
+**[Recovery guide](wiki/Restore-and-Verification.md)** ·
+**[Security policy](SECURITY.md)**
 
 Canonical repository: [github.com/shellharbor/backfort](https://github.com/shellharbor/backfort)
 
-Backfort is a small, one-shot backup and recovery tool for Linux. It reads a
-YAML configuration, creates full file backups, optionally compresses and
-encrypts them, publishes each backup atomically to one or more local or rclone
-destinations, and then exits. Scheduling belongs to cron or a systemd timer;
+## Pick your path
+
+| I need to… | Start here | What Backfort gives you |
+| --- | --- | --- |
+| Protect files and directories on a schedule | [First backup](#first-backup--durable-setup) | A strict YAML job for cron or a systemd timer. |
+| Take a fast snapshot before a risky change | [Quick file backup](#quick-file-backup) | A one-command backup plus a reusable non-secret recovery config. |
+| Back up a Docker Compose stack | [Docker Compose sources](#docker-compose-sources) | Explicit project files, bind mounts, named volumes, and database dumps. |
+| Move a Compose project to a new server | [Compose migration](wiki/Compose-Migration.md) | A staged runbook with rollback-minded cutover steps. |
+| Restore a database to an isolated Compose project | [Compose restore assistant](#restore-safety) | Verified staging and an explicit PostgreSQL/MySQL/MariaDB import boundary. |
+| Send copies off-site | [Rclone destinations](#rclone-destinations-and-copy-policy) | Local, S3-compatible, FTP, Dropbox, Yandex Disk, pCloud, and other rclone remotes. |
+
+## Why recovery stays predictable
+
+```text
+explicit source → local bundle → checksum/signature → independent copies → .complete marker
+                                                                          ↓
+                                                       only then: list / verify / restore / prune
+```
+
+- **No guessing.** You name source paths, Compose files, volumes, bind mounts,
+  databases, destinations, and exclusions.
+- **No half-backup surprise.** Payload, metadata, and checksum arrive before
+  the final `.complete` marker. Interrupted uploads are never valid restores.
+- **No in-place roulette.** Restore always requires a new or empty directory;
+  there is no `--force` overwrite path.
+- **No secret values in YAML.** Configuration refers to environment-variable
+  names, leaving passwords and keys with your secret manager or scheduler.
+
+Backfort reads YAML, creates full backups, optionally compresses and encrypts
+them, publishes each completed version atomically to one or more local or
+rclone destinations, and exits. Scheduling belongs to cron or a systemd timer;
 Backfort does not run a daemon.
 
-Version 0.3 adds the first Docker Compose recovery adapter. A job can archive
+Version 0.5 adds the first Docker Compose recovery adapter. A job can archive
 explicit Compose files, selected named volumes, explicit bind mounts and
 engine-aware database dumps, then publish the resulting bundle through the
 same local and rclone destinations as a file backup.
@@ -24,6 +73,8 @@ same local and rclone destinations as a file backup.
   mounts
 - Logical PostgreSQL, MySQL and MariaDB dumps; native MS SQL and Oracle export
   artifacts
+- A staged Compose recovery assistant with an explicit, double-confirmed
+  logical database import for PostgreSQL, MySQL and MariaDB
 - `gzip`, `zstd`, or uncompressed archives
 - Optional multi-recipient `age` or hardened symmetric GPG encryption
 - Optional detached Minisign payload signatures for untrusted storage
@@ -38,6 +89,7 @@ same local and rclone destinations as a file backup.
 - Opt-in interactive restore version selection for a manual terminal session
 - GFS-style `keep_last`, daily, weekly, and monthly retention
 - Per-destination pinned backups for migration and upgrade recovery points
+- Safe opt-in `pre`/`post` lifecycle hooks for application quiescing and cleanup
 - Event notifications through Telegram, ntfy, webhooks, or local sendmail
 - Global `flock` for mutating commands
 - Read-only dry-run mode and environment diagnostics
@@ -63,7 +115,26 @@ sudo apt-get install bash coreutils findutils gzip tar util-linux
 Install Mike Farah `yq` v4 using its official release or package. The Python
 package with the same name is not compatible.
 
-## Quick start
+## First backup — durable setup
+
+### Need a quick safety copy first?
+
+When you are about to deploy, upgrade, or perform manual maintenance, use the
+`quick` command to protect only the paths you name. It creates an ordinary,
+verifiable Backfort bundle and saves a non-secret recovery configuration below
+the protected state directory:
+
+```bash
+sudo ./backfort.sh quick /etc/nginx /var/www \
+  --name before-deploy \
+  --to /var/backups/backfort
+```
+
+For a repeatable production policy, continue with the YAML setup below. See
+[Quick Backups](wiki/Quick-Backups.md) for rclone, excludes, and Compose
+variants.
+
+### Install and create a durable configuration
 
 Clone the canonical repository:
 
@@ -84,18 +155,7 @@ sudoedit /etc/backfort/config.yaml
 Ready-to-adapt configurations are in [examples](examples/README.md). Start
 with `doctor` and a dry run before creating the first production backup.
 
-## Wiki
-
-The expanded operational guide—with configuration, S3/rclone, Compose,
-database, recovery, retention, automation, and troubleshooting examples—is in
-[the GitHub Wiki sources](wiki/Home.md).
-
-## Community and security
-
-- [Contributing](CONTRIBUTING.md) — development and test expectations
-- [Security policy](SECURITY.md) — responsible vulnerability reporting
-- [Code of Conduct](CODE_OF_CONDUCT.md) — collaboration expectations
-- [Support](SUPPORT.md) — safe, useful bug-reporting context
+### Validate, create, and rehearse recovery
 
 Check the complete configuration and environment without writing backup data:
 
@@ -127,6 +187,59 @@ Backfort preserves absolute source locations below the restore directory. A
 backup of `/etc/nginx` is restored to `/srv/backfort-restore/etc/nginx` in the
 example above. It never writes directly back to the original source path.
 
+### A calm operating rhythm
+
+1. Run `doctor` whenever you change storage, credentials, encryption, hooks,
+   or a Compose source.
+2. Run `--dry-run` before a new or altered job.
+3. Schedule `run` with cron or systemd; schedule `prune` separately.
+4. Verify important copies with `verify --full` and perform a real staged
+   recovery drill at least quarterly.
+5. Pin pre-migration or pre-upgrade recovery points, then remove the pin when
+   the rollback window closes.
+
+### Common operator recipes
+
+```bash
+# 1) Make an explicit off-site copy before a deployment.
+sudo ./backfort.sh quick /etc/nginx /var/www \
+  --name pre-deploy \
+  --to /var/backups/backfort \
+  --to rclone:cloudflare-r2:backfort/web-01 \
+  --min-copies 2
+
+# 2) Capture a Compose project and its PostgreSQL logical dump before an upgrade.
+# BACKFORT_CRM_PG_PASSWORD is supplied by your protected shell, scheduler, or secret manager.
+sudo ./backfort.sh quick-compose /srv/crm \
+  --name crm-before-upgrade \
+  --file compose.yaml \
+  --to rclone:cloudflare-r2:backfort/crm \
+  --db crm-postgres:postgres:postgres:backfort:BACKFORT_CRM_PG_PASSWORD:crm
+
+# 3) Keep a completed recovery point through normal retention.
+sudo ./backfort.sh -c /etc/backfort/config.yaml \
+  pin BACKUP_ID --reason 'rollback point before CRM upgrade'
+
+# 4) Choose a completed version interactively and restore it safely.
+sudo ./backfort.sh -c /etc/backfort/config.yaml \
+  restore --pick --job important-files --to /srv/recovery/important-files
+```
+
+The two `quick` commands save a reusable recovery configuration under Backfort's
+protected state directory. The `--db` option records only the **name** of the
+password environment variable; it never serializes the password itself.
+
+## Wiki, support, and security
+
+The expanded operational guide—with configuration, S3/rclone, Compose,
+database, recovery, retention, automation, and troubleshooting examples—is in
+[the GitHub Wiki sources](wiki/Home.md).
+
+- [Contributing](CONTRIBUTING.md) — development and test expectations
+- [Security policy](SECURITY.md) — responsible vulnerability reporting
+- [Code of Conduct](CODE_OF_CONDUCT.md) — collaboration expectations
+- [Support](SUPPORT.md) — safe, useful bug-reporting context
+
 ## Configuration
 
 The configuration has strict top-level keys:
@@ -140,6 +253,10 @@ settings:
   temp_directory: /var/tmp/backfort
   lock_file: /run/backfort.lock
   min_free_mb: 512
+
+metrics:
+  prometheus:
+    textfile_directory: /var/lib/node_exporter/textfile_collector
 
 destinations:
   - name: local
@@ -161,6 +278,13 @@ jobs:
     success: {min_copies: 2}
     compression: {method: gzip, level: 6}
     encryption: {method: none}
+    hooks:
+      pre:
+        path: /usr/local/lib/backfort/hooks/crm-maintenance
+        args: [enable]
+      post:
+        path: /usr/local/lib/backfort/hooks/crm-maintenance
+        args: [disable]
     retention:
       keep_last: 3
       keep_daily: 7
@@ -174,6 +298,71 @@ hyphens. All filesystem paths must be absolute and must not contain `.` or
 direct source or destination and rejects a destination, state directory, or
 temporary directory located inside a configured source directory. This avoids
 self-referential backups that grow while they are being created.
+
+### Lifecycle hooks: safely quiesce an application
+
+Some applications need a short, deliberate pause before their files are read:
+for example, a filesystem may need `fsfreeze`, or an application may expose a
+maintenance-mode command. A saved job can run an optional `pre` hook before
+the archive pipeline and a `post` hook after it:
+
+```yaml
+hooks:
+  pre:
+    path: /usr/local/lib/backfort/hooks/crm-maintenance
+    args: [enable]
+  post:
+    path: /usr/local/lib/backfort/hooks/crm-maintenance
+    args: [disable]
+```
+
+The hook is an executable file with a literal argument array—not a command
+string. Backfort never evaluates YAML as shell code. For a simple filesystem
+freeze, the script can be intentionally boring and auditable:
+
+```bash
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+case "${BACKFORT_HOOK_PHASE}:${1:-}" in
+  pre:freeze) fsfreeze --freeze /srv/crm-data ;;
+  post:unfreeze) fsfreeze --unfreeze /srv/crm-data ;;
+  *) printf 'unexpected Backfort hook invocation\n' >&2; exit 64 ;;
+esac
+```
+
+Install the script under the account that runs Backfort—typically root—and do
+not leave it writable by a service account:
+
+```bash
+sudo install -o root -g root -m 0750 crm-maintenance /usr/local/lib/backfort/hooks/crm-maintenance
+```
+
+`doctor` and `run` reject a hook that is missing, a symlink, owned by another
+account, non-executable, or group/other-writable. `--dry-run run` prints the
+planned hooks but never invokes them. Hooks run only for configured `run`
+jobs; `quick`, `quick-compose`, restore, verify, list, prune, and doctor do
+not execute them.
+
+Backfort clears its environment before starting a hook. The hook receives only
+a safe system `PATH`, `LANG=C`, and these non-secret variables:
+`BACKFORT_HOOK_PHASE`, `BACKFORT_HOOK_JOB`, `BACKFORT_HOOK_BACKUP_ID`,
+`BACKFORT_HOOK_CONFIG_FILE`, `BACKFORT_HOOK_SOURCE_TYPE`,
+`BACKFORT_HOOK_RESULT`, and `BACKFORT_HOOK_EXIT_CODE`. If a hook needs a
+credential for an external application, make the root-owned script obtain it
+from its own protected source; do not put it in YAML or an argument.
+
+If a post hook exists, Backfort invokes it after a completed pre hook even when
+the pre hook fails, so cleanup scripts must be idempotent. A failed pre hook
+stops archive creation; a failed post hook makes the command fail with exit
+code `3` even if a completed backup was already published. On an ordinary
+`INT` or `TERM` during the backup pipeline, Backfort also attempts the post
+hook. `SIGKILL` and host power loss cannot be intercepted, so every cleanup
+hook must remain safe to run again manually.
+
+For a Compose application, prefer a maintenance-mode hook or an engine-aware
+database dump over stopping containers blindly. Keep the live database volume
+out of `volumes`; Backfort's SQL/native dumps are the portable recovery input.
 
 ### Quick file backup
 
@@ -322,6 +511,43 @@ sudo backfort.sh -c /root/.local/state/backfort/quick-compose/crm-emergency.yaml
   restore latest --job crm-emergency --to /srv/recovery/crm
 ```
 
+### Move a Compose project to a new server
+
+`quick-compose` is the fast source-side step for a server move: it creates a
+portable archive of explicitly selected Compose files, non-database volumes,
+bind mounts, and logical PostgreSQL/MySQL/MariaDB dumps. It is intentionally
+not a remote SSH orchestration command: the target is restored in stages so a
+production volume or database is never overwritten by surprise.
+
+On the source server, send a migration copy to an rclone remote. Include every
+file, volume, bind mount, and database deliberately:
+
+```bash
+sudo backfort.sh --dry-run quick-compose /srv/crm \
+  --name crm-server-move \
+  --file compose.yaml --file .env \
+  --to rclone:cloudflare-r2:backfort-migrations/crm \
+  --volume uploads \
+  --volume-helper-image registry.example/backfort-volume-helper@sha256:REPLACE_WITH_DIGEST \
+  --bind uploads:data/uploads \
+  --db crm-postgres:postgres:postgres:backfort:BACKFORT_PG_PASSWORD:crm
+
+# Repeat without --dry-run once the plan is correct.
+```
+
+The real run writes a non-secret recovery config below
+`$XDG_STATE_HOME/backfort/quick-compose/` (or
+`$HOME/.local/state/backfort/quick-compose/`). Transfer that file to the new
+server over an approved admin channel, configure the same rclone remote there,
+then verify and restore into an empty staging directory. Recreate named volumes
+and import the database only after inspecting the staged files.
+
+The full target-side procedure, including volume extraction, database import,
+cutover checks, and rollback criteria, is in
+[Compose Migration](wiki/Compose-Migration.md). For a rehearsed migration plan
+rather than a one-off command, start from
+[examples/compose-migration.yaml](examples/compose-migration.yaml).
+
 ### Rclone destinations and copy policy
 
 Configure the remote's credentials with `rclone config`, a root-owned rclone
@@ -370,6 +596,53 @@ checksum, then publish `.complete` last.
 Exclude patterns use GNU tar matching rules. Symlinks are archived as links by
 default. Set `follow_symlinks: true` only when copying the referenced data is
 intentional.
+
+### Prometheus metrics
+
+Backfort can expose the result of each saved job through the Prometheus
+node_exporter textfile collector. It still runs no daemon: after a real `run`,
+Backfort atomically replaces one `backfort_<job>.prom` file in the configured
+directory. `--dry-run run`, `quick`, `quick-compose`, restore, prune, and
+watchdog do not create metrics files.
+
+```yaml
+metrics:
+  prometheus:
+    textfile_directory: /var/lib/node_exporter/textfile_collector
+```
+
+Create the directory outside Backfort and grant the execution account write
+access while leaving node_exporter read access. `doctor` checks that it is an
+existing, writable, non-symlink directory. If it becomes unavailable after a
+backup begins, Backfort logs a `kind=metrics` warning and preserves the backup
+command's real exit code; monitoring output must not invalidate a recoverable
+copy.
+
+Every file contains the following gauges, labelled only with the stable
+`host` and `job` identifiers:
+
+| Metric | Meaning |
+| --- | --- |
+| `backfort_last_run_success` | `1` for a fully successful last run, otherwise `0` |
+| `backfort_last_run_exit_code` | Backfort result: `0`, `1`, or `3` |
+| `backfort_last_run_timestamp_seconds` | UTC Unix time when the job run ended |
+| `backfort_last_run_duration_seconds` | Duration of the last job run |
+| `backfort_last_backup_size_bytes` | Payload size when one was created, otherwise `0` |
+| `backfort_last_successful_copies` | Destinations that accepted that run's bundle |
+| `backfort_last_failed_copies` | Destinations that rejected that run's bundle |
+
+Backup IDs, source paths, destination paths, error text, and credentials are
+never labels or values, avoiding both secret exposure and unbounded label
+cardinality. Alert on a failed last run, for example:
+
+```promql
+backfort_last_run_success == 0
+```
+
+Use `backfort_last_run_timestamp_seconds` together with your expected schedule
+to alert when no run has completed recently. See the [Monitoring and Metrics
+wiki page](wiki/Monitoring-and-Metrics.md) for a node_exporter setup and query
+examples.
 
 ### Notifications
 
@@ -514,7 +787,7 @@ be used together with `recipients_env`. The production server may omit every
 private identity entirely. In that case it can create encrypted backups and run
 `verify --quick`, but it cannot decrypt, fully verify, or restore them.
 
-GPG support in 0.3 is symmetric:
+GPG support in 0.5 is symmetric:
 
 ```yaml
 encryption:
@@ -632,10 +905,38 @@ docker run --rm --network none \
   tar --extract --file /backup/data.tar --directory /target
 ```
 
-Import database artifacts only after reviewing the generated Compose project,
-credentials and target names. Backfort does not automatically apply a dump to a
-running database container. That intentional pause is the safety boundary that
-prevents a recovery command from overwriting production data.
+For a Compose backup, `restore-compose` performs the same validated staging
+restore and prints an inventory of Compose files, bind mounts, volume archives,
+and database artifacts. It does not deploy files, start services, recreate
+volumes, or write data into a database by default:
+
+```bash
+backfort.sh -c /etc/backfort/config.yaml \
+  restore-compose latest --job crm --to /srv/recovery/crm
+```
+
+After preparing an isolated target Compose project yourself and starting only
+its database services, it can import the staged logical PostgreSQL, MySQL and
+MariaDB dumps. This remains deliberately opt-in: the target project must be
+named explicitly, and `--apply --confirm` is required. The command checks the
+target Compose files and that each selected database service is running before
+it sends a dump to a client inside the container.
+
+```bash
+# /srv/crm-recovery already contains reviewed Compose files, secrets and a
+# fresh, running database service. Use a new staging directory for this run.
+backfort.sh -c /etc/backfort/config.yaml \
+  restore-compose latest --job crm --to /srv/recovery/crm-import \
+  --project-dir /srv/crm-recovery --apply --confirm
+```
+
+PostgreSQL custom dumps use `pg_restore --clean --if-exists`; plain PostgreSQL
+dumps use `psql` with `ON_ERROR_STOP`; MySQL and MariaDB imports retain the
+database directives from their dumps. PostgreSQL global-role artifacts,
+MS SQL Server `.bak` files, and Oracle exports always require a reviewed,
+vendor-native manual procedure. The assistant never runs `docker compose up`,
+copies staged files into the target, extracts a volume, or applies a dump
+without the two explicit flags.
 
 ## Interactive restore
 
@@ -771,6 +1072,8 @@ verify ID [--from DEST] [--quick|--full] verify a backup
 verify latest --job NAME [...]           verify the newest job backup
 restore ID --to DIR [--from DEST]        restore into a new or empty directory
 restore --pick --to DIR [--job NAME] [--from DEST] choose a completed version interactively
+restore-compose ID --to DIR [...]        stage a Compose backup and print recovery actions
+restore-compose ID --to DIR --project-dir DIR --apply --confirm import supported logical DB dumps
 prune [--job NAME] [--dry-run]           apply retention
 delete --job NAME --since DATE --until DATE [--from DEST] [--confirm] delete one UTC period
 quick-compose PROJECT_DIR --to DEST [OPTIONS] immediate Compose backup and SQL dumps
@@ -871,15 +1174,19 @@ and content comparison:
 ```bash
 bash -n backfort.sh tests/*.sh
 bash tests/smoke.sh
+bash tests/quick.sh
 bash tests/rclone-smoke.sh
 bash tests/compose-smoke.sh
+bash tests/restore-compose.sh
 bash tests/crypto-smoke.sh
 bash tests/watchdog.sh
 bash tests/diff.sh
 bash tests/pinned.sh
+bash tests/delete-period.sh
 bash tests/pick.sh
 bash tests/notify.sh
-bash tests/pick.sh
+bash tests/hooks.sh
+bash tests/metrics.sh
 ```
 
 Run ShellCheck when it is available:
@@ -888,13 +1195,30 @@ Run ShellCheck when it is available:
 shellcheck backfort.sh tests/*.sh
 ```
 
-Every push and pull request also runs these checks on Ubuntu in GitHub Actions.
+## GitHub quality gates
 
-## Version 0.3 limitations
+Backfort's badges point to checks that are actually tracked in the repository:
+
+| Guardrail | What it protects |
+| --- | --- |
+| [CI](.github/workflows/ci.yml) | Bash syntax, Bash 4.3 parsing, ShellCheck, YAML examples, and the hermetic regression suite. |
+| [Documentation](.github/workflows/documentation.yml) | Internal Markdown links across the README, Wiki sources, examples, and community documents, plus whitespace in changed files. |
+| [CodeQL](.github/workflows/codeql.yml) | GitHub Actions workflow analysis on pull requests, `main`, and a weekly schedule. |
+| [OpenSSF Scorecard](.github/workflows/scorecard.yml) | A weekly supply-chain review published to GitHub code scanning. |
+| [Release metadata](.github/workflows/release-metadata.yml) | A `vX.Y.Z` tag must match the CLI version and the Changelog before release work proceeds. |
+| [Dependabot](.github/dependabot.yml) | Weekly grouped GitHub Actions dependency updates. |
+
+Every push and pull request runs CI on Ubuntu. Documentation-only changes also
+run the lightweight link check. CI, Documentation, CodeQL, and Scorecard can be
+started manually from the Actions tab when diagnosing an environment-specific
+failure; Release metadata intentionally starts only when a `vX.Y.Z` tag is
+pushed.
+
+## Version 0.5 limitations
 
 - Full backups only; no incremental mode or deduplication
 - No native S3, SSH or WebDAV destination; use rclone for supported remotes
-- No hooks, metrics, or status page
+- No built-in status page; use Prometheus textfile metrics or `watchdog`
 - No per-file checksums inside the manifest; the complete payload is checksummed
 - GPG encryption is symmetric only
 - GNU userland is required

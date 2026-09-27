@@ -104,6 +104,10 @@ telegram_text() {
   yq eval -r '.text' "$(latest_body)"
 }
 
+telegram_has_thread_id() {
+  yq eval 'has("message_thread_id")' "$(latest_body)"
+}
+
 wait_for_requests() {
   local expected=$1
   local count
@@ -162,6 +166,21 @@ write_config "$telegram_events"
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run >"$TEST_DIRECTORY/success.out" 2>"$TEST_DIRECTORY/success.err"
 wait_for_requests 1
 grep -Fq '[backfort] OK' "$(latest_body)"
+telegram_has_thread_id | grep -qx false
+
+# yq v4 must omit an unset optional thread ID and keep a configured topic ID.
+# Clear the prior success delivery state so antiflood does not suppress this
+# independent payload-shape assertion.
+reset_requests
+rm -rf -- "$STATE_DIRECTORY/notify_state"
+export BACKFORT_TG_THREAD='987'
+threaded_telegram_events=$(printf '%s\n' "$telegram_events" \
+  | yq eval '.notifications.channels[0].thread_id_env = "BACKFORT_TG_THREAD"' -)
+write_config "$threaded_telegram_events"
+"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run >"$TEST_DIRECTORY/threaded-success.out" 2>"$TEST_DIRECTORY/threaded-success.err"
+wait_for_requests 1
+yq eval '.message_thread_id == "987"' "$(latest_body)" | grep -qx true
+unset BACKFORT_TG_THREAD
 
 # Failure -> recovery is transition-only; a third successful run is silent.
 reset_requests
@@ -345,7 +364,7 @@ BACKFORT_EVENT_JOB='notify<script>&' \
 wait_for_requests 1
 TEMPLATE_TEXT=$(telegram_text)
 grep -Fq '<b>Action for notify&lt;script&gt;&amp;</b>' <<<"$TEMPLATE_TEXT"
-grep -Fq '&lt;script&gt;&amp; $(touch ' <<<"$TEMPLATE_TEXT"
+grep -Fq "&lt;script&gt;&amp; \$(touch " <<<"$TEMPLATE_TEXT"
 grep -Fq '<code>sudo backfort.sh -c ' <<<"$TEMPLATE_TEXT"
 [[ ! -e $PWN_FILE ]]
 

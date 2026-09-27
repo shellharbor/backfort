@@ -6,6 +6,13 @@ configuration is YAML and the executable is `backfort.sh`.
 ## Current scope
 
 - Full file and Docker Compose backups to local or rclone destinations.
+- Saved jobs may declare executable `hooks.pre` and `hooks.post` lifecycle
+  scripts for application quiescing and cleanup. Hooks use literal YAML
+  argument arrays, run in a scrubbed non-secret environment, and must be
+  owned by the Backfort execution account and not writable by group or others.
+  A post hook is attempted after a completed pre hook even when the backup
+  fails; hooks remain responsible for idempotent cleanup after SIGKILL or a
+  host failure.
 - `quick PATH ... --to DESTINATION` makes an immediate file or directory
   backup without a saved YAML job. It supports tar excludes, optional symlink
   following, local/rclone copies, and a non-secret recovery config saved under
@@ -14,7 +21,17 @@ configuration is YAML and the executable is `backfort.sh`.
   saved YAML job. It accepts local and rclone destinations, selected volumes
   and bind mounts, plus PostgreSQL/MySQL/MariaDB SQL dumps. It saves a
   non-secret recovery configuration under the protected state directory and
-  reuses the normal atomic publication pipeline.
+  reuses the normal atomic publication pipeline. A server-to-server migration
+  uses this as the verified source-side snapshot and a deliberate staged target
+  restore; Backfort does not automatically connect to, deploy on, or cut over
+  a target server.
+- `restore-compose` stages a verified Compose backup and emits an inventory of
+  project files, bind mounts, volume archives, and database artifacts. With an
+  explicit target project plus `--apply --confirm`, it imports PostgreSQL,
+  MySQL, and MariaDB logical dumps only after verifying the target Compose
+  files and running database services. It does not copy project files, restore
+  volumes, start services, apply PostgreSQL global roles, or automate MS SQL
+  and Oracle recovery.
 - Atomic publication: a backup copy is usable only after its `.complete`
   marker is published.
 - A completed bundle has payload, metadata, checksum and `.complete`; optional
@@ -44,6 +61,10 @@ configuration is YAML and the executable is `backfort.sh`.
   webhooks, and a local sendmail-compatible SMTP transport. Events include
   backup result transitions, watchdog failures, restore result, and completed
   prune activity. Delivery failures only warn and never change command exits.
+- Optional Prometheus node_exporter textfile metrics are atomically replaced
+  after each non-dry-run saved job. The per-job gauges carry only stable host
+  and job labels plus numeric run, duration, payload-size, and copy-count
+  state; metrics write failures warn without changing a backup result.
 - Per-job notification state records `ok` or `bad` atomically. Recovery is a
   transition from bad to successful; failure, partial, and watchdog alerts use
   per-channel antiflood state. An opt-in daily digest is stored under the
@@ -66,7 +87,15 @@ configuration is YAML and the executable is `backfort.sh`.
 ## Verification
 
 Run syntax checks, ShellCheck, and the individual scripts in `tests/`.
-GitHub Actions runs the full test set on Ubuntu with Mike Farah yq v4.
+`tests/metrics.sh` covers the Prometheus output contract, partial results,
+strict schema validation, `doctor` readiness, and a non-fatal post-run metrics
+write failure.
+GitHub Actions runs the full test set on Ubuntu with Mike Farah yq v4 and a
+Bash 4.3 syntax gate. CodeQL scans workflow definitions; OpenSSF Scorecard
+publishes supply-chain findings; a `v*` tag must match the release-ready CLI
+version and Changelog heading; a Documentation workflow checks local Markdown
+links and whitespace; Dependabot proposes grouped weekly GitHub Actions
+updates.
 
 ## CLI
 
@@ -82,6 +111,14 @@ non-blocking global lock as other mutating commands.
 `restore --pick --to DIRECTORY [--job NAME] [--from DEST]` renders completed
 versions and asks an operator to choose one. It is unavailable to cron, pipes,
 and systemd because both stdin and stdout must be TTYs.
+
+`restore-compose BACKUP_ID --to DIRECTORY [--project-dir TARGET --apply
+--confirm]` is the staged Docker Compose recovery helper. Normal use only
+stages and prints the recovery inventory. The optional apply path is a
+deliberate logical database import boundary, not a deployment command: it
+requires an existing target Compose project, its database containers running,
+and both explicit flags. It supports PostgreSQL, MySQL, and MariaDB; a job with
+MS SQL or Oracle must use a vendor-native manual recovery procedure.
 
 `delete --job NAME --since YYYY-MM-DD --until YYYY-MM-DD [--from DESTINATION]`
 is the manual period purge. `--until` includes the full UTC calendar day;

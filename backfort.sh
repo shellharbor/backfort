@@ -5,7 +5,7 @@ IFS=$'\n\t'
 LC_ALL=C
 umask 077
 
-readonly BACKFORT_VERSION="0.3.0-dev"
+readonly BACKFORT_VERSION="0.5.0-dev"
 
 CONFIG_FILE="/etc/backfort/config.yaml"
 CONFIG_FILE_EXPLICIT=false
@@ -18,6 +18,9 @@ VERIFY_MODE="quick"
 RESTORE_DIRECTORY=""
 RESTORE_PICK=false
 RESTORE_PICK_CANCELLED=false
+COMPOSE_RESTORE_PROJECT_DIRECTORY=""
+COMPOSE_RESTORE_APPLY=false
+COMPOSE_RESTORE_CONFIRMED=false
 JSON_OUTPUT=false
 WATCHDOG_MAX_AGE_HOURS=""
 DIFF_ID_ONE=""
@@ -91,10 +94,20 @@ STATE_DIRECTORY=""
 TEMP_DIRECTORY=""
 LOCK_FILE=""
 MIN_FREE_MB=0
+PROMETHEUS_TEXTFILE_DIRECTORY=""
 JOB_COUNT=0
 DESTINATION_COUNT=0
 WORK_DIRECTORY=""
 LOCK_FD=""
+POST_HOOK_PENDING=false
+PRE_HOOK_RUNNING=false
+POST_HOOK_JOB_INDEX=""
+POST_HOOK_JOB_NAME=""
+POST_HOOK_BACKUP_ID=""
+
+# Hooks intentionally get a stable, system-only command search path. They can
+# set a more specific PATH in their own root-owned script when needed.
+readonly BACKFORT_HOOK_SAFE_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'
 
 usage() {
   cat <<EOF
@@ -114,6 +127,8 @@ Usage:
   backfort.sh [-c FILE] restore BACKUP_ID --to DIRECTORY [--from DEST]
   backfort.sh [-c FILE] restore latest --job NAME --to DIRECTORY [--from DEST]
   backfort.sh [-c FILE] restore --pick --to DIRECTORY [--job NAME] [--from DEST]
+  backfort.sh [-c FILE] restore-compose BACKUP_ID --to DIRECTORY [--from DEST] [--project-dir DIRECTORY --apply --confirm]
+  backfort.sh [-c FILE] restore-compose latest --job NAME --to DIRECTORY [--from DEST] [--project-dir DIRECTORY --apply --confirm]
   backfort.sh [-c FILE] [-n] prune [--job NAME]
   backfort.sh [-c FILE] [-n] delete --job NAME --since YYYY-MM-DD --until YYYY-MM-DD [--from DEST] [--confirm]
   backfort.sh [-n] quick PATH [PATH ...] --to DESTINATION [OPTIONS]
@@ -166,6 +181,24 @@ cleanup_work_directory() {
 }
 
 on_exit() {
+  local exit_status=$?
+
+  # A hook may quiesce a filesystem or application before a backup starts.
+  # Run its paired cleanup hook on every ordinary exit path, including a
+  # handled signal and a completed failed pre-hook. Do not race a post hook
+  # against a still-running pre hook interrupted by a signal. SIGKILL and a
+  # host power loss cannot be intercepted, so hook scripts must make their
+  # cleanup idempotent.
+  if [[ ${POST_HOOK_PENDING:-false} == true ]]; then
+    POST_HOOK_PENDING=false
+    if [[ ${PRE_HOOK_RUNNING:-false} == true ]]; then
+      log warning "kind=hook job=$POST_HOOK_JOB_NAME phase=post message=skipped-pre-hook-still-running"
+    elif ! run_job_hook "$POST_HOOK_JOB_INDEX" "$POST_HOOK_JOB_NAME" "$POST_HOOK_BACKUP_ID" \
+      post "$(hook_result_name "$exit_status")" "$exit_status"; then
+      log error "kind=hook job=$POST_HOOK_JOB_NAME phase=post message=exit-cleanup-failed"
+    fi
+  fi
+
   cleanup_work_directory
   if [[ -n ${QUICK_CONFIG_DIRECTORY:-} ]]; then
     case "$QUICK_CONFIG_DIRECTORY" in
@@ -178,6 +211,7 @@ on_exit() {
     esac
     QUICK_CONFIG_DIRECTORY=""
   fi
+  return "$exit_status"
 }
 
 on_interrupt() {
@@ -248,7 +282,7 @@ normalize_watchdog_max_age() {
   normalized=${value#"$leading_zeroes"}
   [[ -n $normalized ]] || normalized=0
   if (( ${#normalized} > 4 )) \
-    || { (( ${#normalized} == 4 )) && [[ $normalized > 8760 ]]; } \
+    || { (( ${#normalized} == 4 )) && (( 10#$normalized > 8760 )); } \
     || [[ $normalized == 0 ]]; then
     return 1
   fi
@@ -423,6 +457,96 @@ validate_files_source() {
   done
   follow_symlinks=$(cfg "$source_path.follow_symlinks // false")
   validate_boolean "jobs[$job_index].source.follow_symlinks" "$follow_symlinks"
+}
+
+job_hook_configured() {
+  local job_index=$1
+  local phase=$2
+
+  case "$phase" in
+    pre|post) ;;
+    *) return 1 ;;
+  esac
+  [[ $(cfg "(.jobs[$job_index].hooks // {}) | has(\"$phase\")") == true ]]
+}
+
+validate_job_hook() {
+  local job_index=$1
+  local job_name=$2
+  local phase=$3
+  local hook_path=".jobs[$job_index].hooks.$phase"
+  local script argument_count argument_index argument
+
+  [[ $(cfg "$hook_path | type") == '!!map' ]] \
+    || config_error "hook-must-be-map job=$job_name phase=$phase"
+  validate_keys "$hook_path" 'path args'
+  [[ $(cfg "$hook_path.path | type") == '!!str' ]] \
+    || config_error "hook-path-must-be-string job=$job_name phase=$phase"
+  script=$(cfg "$hook_path.path // \"\"")
+  validate_absolute_path "jobs[$job_index].hooks.$phase.path" "$script"
+
+  [[ $(cfg "($hook_path.args // []) | type") == '!!seq' ]] \
+    || config_error "hook-args-must-be-array job=$job_name phase=$phase"
+  argument_count=$(cfg "($hook_path.args // []) | length")
+  validate_integer "jobs[$job_index].hooks.$phase.args.length" "$argument_count"
+  for ((argument_index = 0; argument_index < argument_count; argument_index++)); do
+    [[ $(cfg "$hook_path.args[$argument_index] | type") == '!!str' ]] \
+      || config_error "hook-argument-must-be-string job=$job_name phase=$phase index=$argument_index"
+    argument=$(cfg "$hook_path.args[$argument_index]")
+    if [[ $argument == *$'\n'* || $argument == *$'\r'* ]]; then
+      config_error "newline-in-hook-argument job=$job_name phase=$phase index=$argument_index"
+    fi
+  done
+}
+
+validate_job_hooks() {
+  local job_index=$1
+  local job_name=$2
+  local hooks_path=".jobs[$job_index].hooks"
+  local phase
+
+  [[ $(cfg "($hooks_path // {}) | type") == '!!map' ]] \
+    || config_error "hooks-must-be-map job=$job_name"
+  validate_keys "$hooks_path // {}" 'pre post'
+  for phase in pre post; do
+    job_hook_configured "$job_index" "$phase" || continue
+    validate_job_hook "$job_index" "$job_name" "$phase"
+  done
+}
+
+validate_hook_file() {
+  local job_index=$1
+  local job_name=$2
+  local phase=$3
+  local script=$4
+  local owner mode
+
+  [[ -f $script && -x $script && ! -L $script ]] \
+    || config_error "hook-not-executable job=$job_name phase=$phase"
+  owner=$(stat --format='%u' -- "$script") \
+    || config_error "hook-stat-failed job=$job_name phase=$phase"
+  [[ $owner == "$EUID" ]] \
+    || config_error "hook-owner-mismatch job=$job_name phase=$phase"
+  mode=$(stat --format='%a' -- "$script") \
+    || config_error "hook-stat-failed job=$job_name phase=$phase"
+  [[ $mode =~ ^[0-7]{3,4}$ ]] \
+    || config_error "hook-invalid-mode job=$job_name phase=$phase"
+  if (( (8#$mode & 8#22) != 0 )); then
+    config_error "hook-group-or-other-writable job=$job_name phase=$phase"
+  fi
+  : "$job_index"
+}
+
+preflight_job_hooks() {
+  local job_index=$1
+  local job_name=$2
+  local phase script
+
+  for phase in pre post; do
+    job_hook_configured "$job_index" "$phase" || continue
+    script=$(cfg ".jobs[$job_index].hooks.$phase.path")
+    validate_hook_file "$job_index" "$job_name" "$phase" "$script"
+  done
 }
 
 job_signing_method() {
@@ -797,6 +921,26 @@ validate_notifications_config() {
   done
 }
 
+validate_metrics_config() {
+  local directory
+
+  [[ $(cfg '.metrics | type') == '!!map' ]] || config_error "metrics-must-be-map"
+  validate_keys '.metrics' 'prometheus'
+  [[ $(cfg '.metrics | has("prometheus")') == true ]] || return 0
+
+  [[ $(cfg '.metrics.prometheus | type') == '!!map' ]] \
+    || config_error "prometheus-metrics-must-be-map"
+  validate_keys '.metrics.prometheus' 'textfile_directory'
+  [[ $(cfg '.metrics.prometheus | has("textfile_directory")') == true ]] \
+    || config_error "prometheus-textfile-directory-required"
+  [[ $(cfg '.metrics.prometheus.textfile_directory | type') == '!!str' ]] \
+    || config_error "prometheus-textfile-directory-must-be-string"
+
+  directory=$(cfg '.metrics.prometheus.textfile_directory')
+  validate_absolute_path metrics.prometheus.textfile_directory "$directory"
+  PROMETHEUS_TEXTFILE_DIRECTORY=$directory
+}
+
 validate_config() {
   if [[ ! -f $CONFIG_FILE || ! -r $CONFIG_FILE ]]; then
     config_error "config-not-readable file=$CONFIG_FILE"
@@ -806,7 +950,7 @@ validate_config() {
     config_error "invalid-yaml file=$CONFIG_FILE"
   fi
 
-  validate_keys '.' 'version settings destinations jobs watchdog notifications'
+  validate_keys '.' 'version settings destinations jobs watchdog notifications metrics'
 
   local schema_version settings_type destinations_type jobs_type
   schema_version=$(cfg '.version // 0')
@@ -832,6 +976,11 @@ validate_config() {
   validate_absolute_path settings.temp_directory "$TEMP_DIRECTORY"
   validate_absolute_path settings.lock_file "$LOCK_FILE"
   validate_integer settings.min_free_mb "$MIN_FREE_MB"
+
+  PROMETHEUS_TEXTFILE_DIRECTORY=""
+  if [[ $(cfg '. | has("metrics")') == true ]]; then
+    validate_metrics_config
+  fi
 
   DESTINATION_COUNT=$(cfg '.destinations | length')
   JOB_COUNT=$(cfg '.jobs | length')
@@ -873,7 +1022,7 @@ validate_config() {
   local keep_last keep_daily keep_weekly keep_monthly max_age_days destination_name destination_index env_name minimum_copies
 
   for ((index = 0; index < JOB_COUNT; index++)); do
-    validate_keys ".jobs[$index]" 'name source destinations compression encryption signing retention success'
+    validate_keys ".jobs[$index]" 'name source destinations compression encryption signing retention success hooks'
     name=$(cfg ".jobs[$index].name // \"\"")
     validate_identifier job "$name"
 
@@ -889,6 +1038,7 @@ validate_config() {
       docker_compose) validate_docker_compose_source "$index" "$name" ;;
       *) config_error "unsupported-source-type job=$name type=$source_type" ;;
     esac
+    validate_job_hooks "$index" "$name"
 
     [[ $(cfg ".jobs[$index].destinations | type") == '!!seq' ]] || config_error "job-destinations-must-be-array job=$name"
     destinations_count=$(cfg ".jobs[$index].destinations | length")
@@ -1109,6 +1259,21 @@ docker_compose_job() {
   docker "${compose_arguments[@]}" "$@"
 }
 
+docker_compose_target_project() {
+  local job_index=$1
+  local project_dir=$2
+  shift 2
+  local files_count file_index file
+  local -a compose_arguments=(compose --project-directory "$project_dir")
+
+  files_count=$(cfg ".jobs[$job_index].source.files | length")
+  for ((file_index = 0; file_index < files_count; file_index++)); do
+    file=$(cfg ".jobs[$job_index].source.files[$file_index]")
+    compose_arguments+=(-f "$project_dir/$file")
+  done
+  docker "${compose_arguments[@]}" "$@"
+}
+
 compose_volume_name() {
   local job_index=$1
   local logical_name=$2
@@ -1155,6 +1320,7 @@ preflight_files_source() {
       done
     fi
   done
+  return 0
 }
 
 preflight_docker_compose_source() {
@@ -1244,11 +1410,13 @@ preflight_job() {
   require_command chmod
   require_command cp
   require_command dirname
+  require_command env
   require_command flock
   require_command mkdir
   require_command mktemp
   require_command mv
   require_command rm
+  require_command stat
   case "$compression" in
     gzip) require_command gzip ;;
     zstd) require_command zstd ;;
@@ -1303,6 +1471,7 @@ preflight_job() {
     docker_compose) preflight_docker_compose_source "$index" "$name" ;;
     *) config_error "unsupported-source-type job=$name type=$source_type" ;;
   esac
+  preflight_job_hooks "$index" "$name"
 
   local existing
   existing=$(nearest_existing_directory "$TEMP_DIRECTORY") || config_error "temp-directory-has-no-parent"
@@ -1342,6 +1511,12 @@ preflight_selected_jobs() {
     [[ -z $SELECTED_JOB || $name == "$SELECTED_JOB" ]] || continue
     preflight_job "$index" "$check_destinations"
   done
+}
+
+preflight_prometheus_metrics() {
+  [[ -n $PROMETHEUS_TEXTFILE_DIRECTORY ]] || return 0
+  [[ -d $PROMETHEUS_TEXTFILE_DIRECTORY && ! -L $PROMETHEUS_TEXTFILE_DIRECTORY && -w $PROMETHEUS_TEXTFILE_DIRECTORY ]] \
+    || config_error "prometheus-textfile-directory-not-usable path=$PROMETHEUS_TEXTFILE_DIRECTORY"
 }
 
 ensure_runtime_directories() {
@@ -1888,14 +2063,15 @@ notification_make_body_file() {
 
 notification_parse_headers() {
   local headers=${1:-}
-  local header name
+  local header name backslash
 
   NOTIFY_CURL_HEADERS=''
+  backslash=$(printf "\\\\")
   while IFS= read -r header; do
     [[ -z $header ]] && continue
     name=${header%%:*}
     if [[ $header != *:* || ! $name =~ ^[A-Za-z0-9-]+$ || $header == *$'\r'* || $header == *$'\n'* \
-      || $header == *'"'* || $header == *'\\'* || $header =~ [[:cntrl:]] ]]; then
+      || $header == *'"'* || $header == *"$backslash"* || $header =~ [[:cntrl:]] ]]; then
       return 1
     fi
     NOTIFY_CURL_HEADERS+="$header"$'\n'
@@ -1959,7 +2135,7 @@ notification_send_telegram() {
     return 2
   fi
   if ! body=$(BF_NOTIFY_CHAT="$chat" BF_NOTIFY_TEXT="$message" BF_NOTIFY_THREAD="$thread" \
-    yq eval -n -o=json '{"chat_id": strenv(BF_NOTIFY_CHAT), "text": strenv(BF_NOTIFY_TEXT), "parse_mode": "HTML"} + (if strenv(BF_NOTIFY_THREAD) == "" then {} else {"message_thread_id": strenv(BF_NOTIFY_THREAD)} end)'); then
+    yq eval -n -o=json '{"chat_id": strenv(BF_NOTIFY_CHAT), "text": strenv(BF_NOTIFY_TEXT), "parse_mode": "HTML"} + ({"message_thread_id": strenv(BF_NOTIFY_THREAD)} | with_entries(select(.value != "")))'); then
     return 1
   fi
   notification_make_body_file "$body" || return 1
@@ -2461,6 +2637,31 @@ compose_exec_with_secret() {
   return "$result"
 }
 
+compose_target_exec_with_secret() {
+  local job_index=$1
+  local database_index=$2
+  local project_dir=$3
+  local container_variable=$4
+  local service=$5
+  shift 5
+  local password_env secret result
+
+  password_env=$(cfg ".jobs[$job_index].source.databases[$database_index].password_env")
+  secret=${!password_env-}
+  [[ -n $secret ]] || config_error "missing-environment-variable job=$(cfg ".jobs[$job_index].name") variable=$password_env"
+
+  if (
+    export "$container_variable=$secret"
+    docker_compose_target_project "$job_index" "$project_dir" exec -T -e "$container_variable" "$service" "$@"
+  ); then
+    result=0
+  else
+    result=$?
+  fi
+  secret=""
+  return "$result"
+}
+
 compose_container_id() {
   local job_index=$1
   local service=$2
@@ -2607,6 +2808,7 @@ snapshot_oracle_database() {
   container_dump="${path%/}/$dumpfile"
   container_log="${path%/}/$logfile"
 
+  # shellcheck disable=SC2016 # The fixed command expands values inside the container shell.
   if ! compose_exec_with_secret "$job_index" "$database_index" BACKFORT_ORACLE_PASSWORD "$service" \
     sh -c 'printf "%s\\n" "$BACKFORT_ORACLE_PASSWORD" | expdp "$1@$2" DIRECTORY="$3" DUMPFILE="$4" LOGFILE="$5" FULL=Y REUSE_DUMPFILES=Y' \
     backfort-expdp "$user" "$connect" "$directory" "$dumpfile" "$logfile" >/dev/null; then
@@ -2788,28 +2990,30 @@ manifest_entries_from_tar() {
   local tar_file=$1
   local output=$2
   local listing="$WORK_DIRECTORY/manifest-entries.list"
-  local mode owner size date_value time_value archive_path entry_path entry_type
+  local mode _owner size date_value time_value archive_path entry_path entry_type
   local count=0
 
   : >"$output"
   tar --list --verbose --full-time --numeric-owner --quoting-style=literal --file "$tar_file" >"$listing" || return 1
-  while IFS=' ' read -r mode owner size date_value time_value archive_path; do
+  while IFS=' ' read -r mode _owner size date_value time_value archive_path; do
     [[ $archive_path == data || $archive_path == data/ ]] && continue
     [[ $archive_path == data/* ]] || return 1
     entry_path=${archive_path#data/}
     case "${mode:0:1}" in
-      -) entry_type=file ;;
-      d) entry_type=directory; entry_path=${entry_path%/} ;;
-      l) entry_type=symlink; entry_path=${entry_path%%' -> '*} ;;
-      h) entry_type=hardlink; entry_path=${entry_path%%' link to '*} ;;
+      -) entry_type='file' ;;
+      d) entry_type='directory'; entry_path=${entry_path%/} ;;
+      l) entry_type='symlink'; entry_path=${entry_path%%' -> '*} ;;
+      h) entry_type='hardlink'; entry_path=${entry_path%%' link to '*} ;;
       *) return 1 ;;
     esac
     [[ $size =~ ^[0-9]+$ ]] || return 1
     safe_manifest_entry_path "$entry_path" || return 1
-    printf '%s\n' "- path: $(yaml_quote "$entry_path")" >>"$output"
-    printf '%s\n' "  type: $(yaml_quote "$entry_type")" >>"$output"
-    printf '%s\n' "  size: $size" >>"$output"
-    printf '%s\n' "  mtime: $(yaml_quote "$date_value $time_value")" >>"$output"
+    {
+      printf '%s\n' "- path: $(yaml_quote "$entry_path")"
+      printf '%s\n' "  type: $(yaml_quote "$entry_type")"
+      printf '%s\n' "  size: $size"
+      printf '%s\n' "  mtime: $(yaml_quote "$date_value $time_value")"
+    } >>"$output"
     count=$((count + 1))
   done <"$listing"
 
@@ -2938,6 +3142,79 @@ atomic_copy() {
   local temporary="${destination}.partial.$$"
   rm -f -- "$temporary"
   cp -- "$source" "$temporary" && mv -- "$temporary" "$destination"
+}
+
+prometheus_nonnegative_integer() {
+  local value=${1:-}
+
+  [[ $value =~ ^[0-9]+$ ]] || value=0
+  printf '%s\n' "$value"
+}
+
+write_prometheus_metrics() {
+  local job=$1
+  local exit_code=$2
+  local successful failed size duration duration_value recorded_at success_value
+  local temporary final labels
+
+  [[ -n $PROMETHEUS_TEXTFILE_DIRECTORY ]] || return 0
+  if [[ ! -d $PROMETHEUS_TEXTFILE_DIRECTORY || -L $PROMETHEUS_TEXTFILE_DIRECTORY \
+    || ! -w $PROMETHEUS_TEXTFILE_DIRECTORY ]]; then
+    log warning "kind=metrics message=prometheus-textfile-directory-not-usable path=$PROMETHEUS_TEXTFILE_DIRECTORY"
+    return 1
+  fi
+
+  case "$exit_code" in
+    0) success_value=1 ;;
+    *) success_value=0 ;;
+  esac
+  successful=$(prometheus_nonnegative_integer "${BACKFORT_METRICS_SUCCESSFUL_COPIES:-}")
+  failed=$(prometheus_nonnegative_integer "${BACKFORT_METRICS_FAILED_COPIES:-}")
+  size=$(prometheus_nonnegative_integer "${BACKFORT_EVENT_SIZE:-}")
+  duration_value=${BACKFORT_EVENT_DURATION:-}
+  duration_value=${duration_value%s}
+  duration=$(prometheus_nonnegative_integer "$duration_value")
+  recorded_at=$(date -u +%s)
+  final="$PROMETHEUS_TEXTFILE_DIRECTORY/backfort_${job}.prom"
+  labels="host=\"$HOST_ID\",job=\"$job\""
+
+  if ! temporary=$(mktemp -- "$PROMETHEUS_TEXTFILE_DIRECTORY/.backfort_${job}.prom.XXXXXX"); then
+    log warning "kind=metrics message=prometheus-textfile-create-failed job=$job"
+    return 1
+  fi
+  if ! {
+    printf '%s\n' '# HELP backfort_last_run_success Whether the latest job run completed fully (1) or not (0).'
+    printf '%s\n' '# TYPE backfort_last_run_success gauge'
+    printf 'backfort_last_run_success{%s} %s\n' "$labels" "$success_value"
+    printf '%s\n' '# HELP backfort_last_run_exit_code Backfort exit code from the latest job run.'
+    printf '%s\n' '# TYPE backfort_last_run_exit_code gauge'
+    printf 'backfort_last_run_exit_code{%s} %s\n' "$labels" "$exit_code"
+    printf '%s\n' '# HELP backfort_last_run_timestamp_seconds Unix timestamp when the latest job run finished.'
+    printf '%s\n' '# TYPE backfort_last_run_timestamp_seconds gauge'
+    printf 'backfort_last_run_timestamp_seconds{%s} %s\n' "$labels" "$recorded_at"
+    printf '%s\n' '# HELP backfort_last_run_duration_seconds Duration of the latest job run in seconds.'
+    printf '%s\n' '# TYPE backfort_last_run_duration_seconds gauge'
+    printf 'backfort_last_run_duration_seconds{%s} %s\n' "$labels" "$duration"
+    printf '%s\n' '# HELP backfort_last_backup_size_bytes Size of the latest created backup payload in bytes.'
+    printf '%s\n' '# TYPE backfort_last_backup_size_bytes gauge'
+    printf 'backfort_last_backup_size_bytes{%s} %s\n' "$labels" "$size"
+    printf '%s\n' '# HELP backfort_last_successful_copies Number of destinations that accepted the latest backup.'
+    printf '%s\n' '# TYPE backfort_last_successful_copies gauge'
+    printf 'backfort_last_successful_copies{%s} %s\n' "$labels" "$successful"
+    printf '%s\n' '# HELP backfort_last_failed_copies Number of destinations that rejected the latest backup.'
+    printf '%s\n' '# TYPE backfort_last_failed_copies gauge'
+    printf 'backfort_last_failed_copies{%s} %s\n' "$labels" "$failed"
+  } >"$temporary"; then
+    rm -f -- "$temporary"
+    log warning "kind=metrics message=prometheus-textfile-write-failed job=$job"
+    return 1
+  fi
+  if ! chmod 0644 -- "$temporary" || ! mv -f -- "$temporary" "$final"; then
+    rm -f -- "$temporary"
+    log warning "kind=metrics message=prometheus-textfile-publish-failed job=$job"
+    return 1
+  fi
+  log info "event=prometheus-metrics-written job=$job file=$final"
 }
 
 destination_object_exists() {
@@ -3083,8 +3360,9 @@ publish_to_destination() {
   esac
 }
 
-run_job() {
+run_job_backup() {
   local job_index=$1
+  local configured_backup_id=${2:-}
   local job_name source_type compression compression_level encryption signing created_at backup_id extension
   local manifest tar_file compressed_file payload_file checksum_file signature_file payload_name hash
   local destination_count destination_position destination_name destination_index minimum_copies started_seconds payload_size
@@ -3111,7 +3389,7 @@ run_job() {
   make_work_directory
   started_seconds=$(date -u +%s)
   created_at=$(timestamp)
-  backup_id=$(new_backup_id "$job_name")
+  backup_id=${configured_backup_id:-$(new_backup_id "$job_name")}
   BACKFORT_EVENT_JOB=$job_name
   BACKFORT_EVENT_ID=$backup_id
   BACKFORT_EVENT_SIZE=''
@@ -3121,6 +3399,8 @@ run_job() {
   BACKFORT_EVENT_STAGE=''
   BACKFORT_EVENT_ERROR=''
   BACKFORT_EVENT_EXTRA=''
+  BACKFORT_METRICS_SUCCESSFUL_COPIES=0
+  BACKFORT_METRICS_FAILED_COPIES=0
   extension=$(artifact_extensions "$compression" "$encryption")
   payload_name="$backup_id$extension"
   manifest="$WORK_DIRECTORY/manifest.json"
@@ -3137,7 +3417,7 @@ run_job() {
 
   log info "event=backup-started job=$job_name backup_id=$backup_id"
   if ! pack_job "$job_index" "$tar_file" "$backup_id" "$created_at" "$payload_name" "$manifest"; then
-    BACKFORT_EVENT_STAGE=pack
+    BACKFORT_EVENT_STAGE='pack'
     BACKFORT_EVENT_ERROR='backup packaging failed'
     BACKFORT_EVENT_DURATION="$(( $(date -u +%s) - started_seconds ))s"
     cleanup_work_directory
@@ -3147,7 +3427,7 @@ run_job() {
   if [[ $compression != none ]]; then
     if ! compress_tar "$compression" "$compression_level" "$tar_file" "$compressed_file"; then
       log error "kind=compress job=$job_name method=$compression message=failed"
-      BACKFORT_EVENT_STAGE=compress
+      BACKFORT_EVENT_STAGE='compress'
       BACKFORT_EVENT_ERROR='backup compression failed'
       BACKFORT_EVENT_DURATION="$(( $(date -u +%s) - started_seconds ))s"
       cleanup_work_directory
@@ -3159,7 +3439,7 @@ run_job() {
   if [[ $encryption != none ]]; then
     if ! encrypt_artifact "$encryption" "$job_index" "$compressed_file" "$payload_file"; then
       log error "kind=encrypt job=$job_name method=$encryption message=failed"
-      BACKFORT_EVENT_STAGE=encrypt
+      BACKFORT_EVENT_STAGE='encrypt'
       BACKFORT_EVENT_ERROR='backup encryption failed'
       BACKFORT_EVENT_DURATION="$(( $(date -u +%s) - started_seconds ))s"
       cleanup_work_directory
@@ -3203,7 +3483,9 @@ run_job() {
   BACKFORT_EVENT_DURATION="$(( $(date -u +%s) - started_seconds ))s"
   BACKFORT_EVENT_DESTINATIONS=$successful_destinations
   BACKFORT_EVENT_FAILED_DESTINATIONS=$failed_destinations
-  BACKFORT_EVENT_STAGE=publish
+  BACKFORT_EVENT_STAGE='publish'
+  BACKFORT_METRICS_SUCCESSFUL_COPIES=$successful
+  BACKFORT_METRICS_FAILED_COPIES=$failed
   cleanup_work_directory
   if ((successful == 0)); then
     log error "event=backup-failed job=$job_name backup_id=$backup_id reason=no-destination-succeeded"
@@ -3224,10 +3506,142 @@ run_job() {
   return 0
 }
 
+hook_result_name() {
+  local exit_code=$1
+
+  case "$exit_code" in
+    0) printf '%s\n' success ;;
+    1) printf '%s\n' partial ;;
+    130|143) printf '%s\n' interrupted ;;
+    *) printf '%s\n' failure ;;
+  esac
+}
+
+plan_job_hooks() {
+  local job_index=$1
+  local job_name=$2
+  local phase script argument_count
+
+  for phase in pre post; do
+    job_hook_configured "$job_index" "$phase" || continue
+    script=$(cfg ".jobs[$job_index].hooks.$phase.path")
+    argument_count=$(cfg "(.jobs[$job_index].hooks.$phase.args // []) | length")
+    log info "event=plan-hook job=$job_name phase=$phase path=$script args_count=$argument_count"
+  done
+}
+
+run_job_hook() {
+  local job_index=$1
+  local job_name=$2
+  local backup_id=$3
+  local phase=$4
+  local hook_result=$5
+  local hook_exit_code=$6
+  local script argument_count argument_index argument hook_status
+  local -a hook_arguments=()
+
+  job_hook_configured "$job_index" "$phase" || return 0
+  script=$(cfg ".jobs[$job_index].hooks.$phase.path")
+  argument_count=$(cfg "(.jobs[$job_index].hooks.$phase.args // []) | length")
+  for ((argument_index = 0; argument_index < argument_count; argument_index++)); do
+    argument=$(cfg ".jobs[$job_index].hooks.$phase.args[$argument_index]")
+    hook_arguments+=("$argument")
+  done
+
+  log info "event=hook-started job=$job_name backup_id=$backup_id phase=$phase args_count=$argument_count"
+  if (
+    cd /
+    exec env -i \
+      PATH="$BACKFORT_HOOK_SAFE_PATH" \
+      LANG=C \
+      BACKFORT_HOOK_PHASE="$phase" \
+      BACKFORT_HOOK_JOB="$job_name" \
+      BACKFORT_HOOK_BACKUP_ID="$backup_id" \
+      BACKFORT_HOOK_CONFIG_FILE="$CONFIG_FILE" \
+      BACKFORT_HOOK_SOURCE_TYPE="$(cfg ".jobs[$job_index].source.type")" \
+      BACKFORT_HOOK_RESULT="$hook_result" \
+      BACKFORT_HOOK_EXIT_CODE="$hook_exit_code" \
+      "$script" "${hook_arguments[@]}"
+  ); then
+    log info "event=hook-succeeded job=$job_name backup_id=$backup_id phase=$phase"
+    return 0
+  else
+    hook_status=$?
+    log error "kind=hook job=$job_name backup_id=$backup_id phase=$phase exit_code=$hook_status message=failed"
+    return "$hook_status"
+  fi
+}
+
+run_job() {
+  local job_index=$1
+  local job_name backup_id hook_result hook_exit_code post_status pre_status
+
+  job_name=$(cfg ".jobs[$job_index].name")
+  if [[ $DRY_RUN == true ]]; then
+    plan_job_hooks "$job_index" "$job_name"
+    run_job_backup "$job_index"
+    return
+  fi
+
+  backup_id=$(new_backup_id "$job_name")
+  if job_hook_configured "$job_index" post; then
+    POST_HOOK_PENDING=true
+    POST_HOOK_JOB_INDEX=$job_index
+    POST_HOOK_JOB_NAME=$job_name
+    POST_HOOK_BACKUP_ID=$backup_id
+  fi
+
+  PRE_HOOK_RUNNING=true
+  if run_job_hook "$job_index" "$job_name" "$backup_id" pre starting 0; then
+    pre_status=0
+  else
+    pre_status=$?
+  fi
+  PRE_HOOK_RUNNING=false
+  if ((pre_status != 0)); then
+    BACKFORT_EVENT_JOB=$job_name
+    BACKFORT_EVENT_ID=$backup_id
+    BACKFORT_EVENT_SIZE=''
+    BACKFORT_EVENT_DURATION=''
+    BACKFORT_EVENT_DESTINATIONS=''
+    BACKFORT_EVENT_FAILED_DESTINATIONS=''
+    BACKFORT_EVENT_STAGE='pre-hook'
+    BACKFORT_EVENT_ERROR='pre hook failed'
+    BACKFORT_EVENT_EXTRA=''
+    BACKFORT_METRICS_SUCCESSFUL_COPIES=0
+    BACKFORT_METRICS_FAILED_COPIES=0
+    hook_result=failure
+    hook_exit_code=3
+  elif run_job_backup "$job_index" "$backup_id"; then
+    hook_result=success
+    hook_exit_code=0
+  else
+    hook_exit_code=$?
+    hook_result=$(hook_result_name "$hook_exit_code")
+  fi
+
+  if job_hook_configured "$job_index" post; then
+    if run_job_hook "$job_index" "$job_name" "$backup_id" post "$hook_result" "$hook_exit_code"; then
+      post_status=0
+    else
+      post_status=$?
+    fi
+    POST_HOOK_PENDING=false
+    if ((post_status != 0)); then
+      BACKFORT_EVENT_STAGE='post-hook'
+      BACKFORT_EVENT_ERROR='post hook failed; a backup may still be complete'
+      return 3
+    fi
+  fi
+
+  return "$hook_exit_code"
+}
+
 run_command() {
   # A destination is an independent publish attempt.  Its availability is
   # checked by publish_to_destination so one failed copy can yield a partial
   # result instead of preventing every other destination from receiving data.
+  preflight_prometheus_metrics
   preflight_selected_jobs false
   if [[ $DRY_RUN == false ]]; then
     require_command flock
@@ -3245,7 +3659,10 @@ run_command() {
     else
       job_result=$?
     fi
-    [[ $DRY_RUN == true ]] || bf_notify_result run "$job_result"
+    if [[ $DRY_RUN == false ]]; then
+      write_prometheus_metrics "$name" "$job_result" || true
+      bf_notify_result run "$job_result"
+    fi
     if ((job_result == 3)); then
       result=3
     elif ((job_result == 1 && result == 0)); then
@@ -3675,19 +4092,17 @@ list_command() {
           BF_LIST_DESTINATION=$destination_name BF_LIST_PINNED=$pinned BF_LIST_PINNED_REASON=$pinned_reason \
             yq eval -o=json -I=2 '. + {
               "destination": strenv(BF_LIST_DESTINATION),
-              "pinned": (strenv(BF_LIST_PINNED) == "true")
-            } | if strenv(BF_LIST_PINNED_REASON) == "" then . else . + {
+              "pinned": (strenv(BF_LIST_PINNED) == "true"),
               "pinned_reason": strenv(BF_LIST_PINNED_REASON)
-            } end' "$(destination_object "$destination_index" "$backup_id.metadata.json")"
+            } | with_entries(select(.key != "pinned_reason" or .value != ""))' "$(destination_object "$destination_index" "$backup_id.metadata.json")"
         else
           rclone cat "$(destination_object "$destination_index" "$backup_id.metadata.json")" \
             | BF_LIST_DESTINATION=$destination_name BF_LIST_PINNED=$pinned BF_LIST_PINNED_REASON=$pinned_reason \
               yq eval -o=json -I=2 '. + {
                 "destination": strenv(BF_LIST_DESTINATION),
-                "pinned": (strenv(BF_LIST_PINNED) == "true")
-              } | if strenv(BF_LIST_PINNED_REASON) == "" then . else . + {
+                "pinned": (strenv(BF_LIST_PINNED) == "true"),
                 "pinned_reason": strenv(BF_LIST_PINNED_REASON)
-              } end' -
+              } | with_entries(select(.key != "pinned_reason" or .value != ""))' -
         fi
         first_json=false
       else
@@ -4143,8 +4558,15 @@ ensure_selected_archive_streamable() {
 }
 
 stream_selected_payload() {
+  # Remote bundles are materialized locally before checksum/signature checks.
+  # Stream that verified artifact instead of passing its temporary local path to
+  # rclone, which expects a remote object name.
+  if [[ -f $BACKUP_PAYLOAD && ! -L $BACKUP_PAYLOAD ]]; then
+    cat -- "$BACKUP_PAYLOAD"
+    return 0
+  fi
+
   case "$(destination_type "$BACKUP_DESTINATION_INDEX")" in
-    local) cat -- "$BACKUP_PAYLOAD" ;;
     rclone)
       require_command rclone
       rclone cat "$BACKUP_PAYLOAD"
@@ -4441,12 +4863,12 @@ print_diff_text() {
 
 write_diff_json_entries() {
   local key=$1
-  local records=$2
+  local records_file=$2
   local kind=$3
   local path entry_type size mtime target type_one size_one mtime_one target_one type_two size_two mtime_two target_two
   local type_changed mtime_changed target_changed
 
-  if [[ ! -s $records ]]; then
+  if [[ ! -s $records_file ]]; then
     printf '%s: []\n' "$key"
     return 0
   fi
@@ -4470,7 +4892,7 @@ write_diff_json_entries() {
       printf '    type_changed: %s\n' "$type_changed"
       printf '    mtime_changed: %s\n' "$mtime_changed"
       printf '    target_changed: %s\n' "$target_changed"
-    done <"$records"
+    done <"$records_file"
     return 0
   fi
   while IFS=$'\t' read -r path entry_type size mtime target; do
@@ -4478,7 +4900,7 @@ write_diff_json_entries() {
     printf '    type: %s\n' "$(yaml_quote "$entry_type")"
     printf '    size: %s\n' "$size"
     printf '    mtime: %s\n' "$(yaml_quote "$mtime")"
-  done <"$records"
+  done <"$records_file"
 }
 
 print_diff_json() {
@@ -4684,6 +5106,309 @@ restore_command() {
   fi
   cleanup_work_directory
   log info "event=restore-succeeded backup_id=$BACKUP_ID destination=$BACKUP_DESTINATION_NAME to=$RESTORE_DIRECTORY"
+}
+
+compose_restore_prepare() {
+  local backup_job backup_source job_index
+
+  if ! select_backup "$BACKUP_REFERENCE"; then
+    return 3
+  fi
+  backup_job=$(selected_metadata_value '.job // ""') || return 3
+  backup_source=$(selected_metadata_value '.source.type // ""') || return 3
+  if [[ $backup_source != docker_compose ]]; then
+    log error "kind=compose-restore backup_id=$BACKUP_ID message=backup-is-not-compose"
+    return 2
+  fi
+  if ! job_index=$(find_job_index "$backup_job"); then
+    log error "kind=compose-restore backup_id=$BACKUP_ID job=$backup_job message=recovery-job-not-in-config"
+    return 2
+  fi
+  if [[ $(cfg ".jobs[$job_index].source.type") != docker_compose ]]; then
+    log error "kind=compose-restore backup_id=$BACKUP_ID job=$backup_job message=recovery-job-is-not-compose"
+    return 2
+  fi
+  printf '%s\n' "$job_index"
+}
+
+compose_restore_database_artifact() {
+  local job_index=$1
+  local database_index=$2
+  local extension=$3
+  local database=$4
+  local database_name directory artifact
+
+  database_name=$(cfg ".jobs[$job_index].source.databases[$database_index].name")
+  directory="$RESTORE_DIRECTORY/databases/$database_name"
+  artifact="$directory/$database.$extension"
+  if [[ ! -d $directory || -L $directory || ! -r $directory || ! -f $artifact || -L $artifact || ! -r $artifact ]]; then
+    log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=database-artifact-missing"
+    return 3
+  fi
+  printf '%s\n' "$artifact"
+}
+
+compose_restore_validate_staged_artifacts() {
+  local job_index=$1
+  local databases_count database_index database_name database_count database_position database
+  local engine format extension directory artifact
+
+  [[ -d "$RESTORE_DIRECTORY/compose" && ! -L "$RESTORE_DIRECTORY/compose" ]] || {
+    log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") message=compose-directory-missing"
+    return 3
+  }
+
+  databases_count=$(cfg ".jobs[$job_index].source.databases // [] | length")
+  for ((database_index = 0; database_index < databases_count; database_index++)); do
+    database_name=$(cfg ".jobs[$job_index].source.databases[$database_index].name")
+    engine=$(cfg ".jobs[$job_index].source.databases[$database_index].engine")
+    format=$(cfg ".jobs[$job_index].source.databases[$database_index].format // \"custom\"")
+    directory="$RESTORE_DIRECTORY/databases/$database_name"
+    [[ -d $directory && ! -L $directory && -r $directory ]] || {
+      log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=database-directory-missing"
+      return 3
+    }
+    case "$engine" in
+      postgres)
+        [[ $format == custom ]] && extension=dump || extension=sql
+        ;;
+      mysql|mariadb) extension=sql ;;
+      mssql) extension=bak ;;
+      oracle) extension=dmp ;;
+      *)
+        log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=unsupported-engine"
+        return 2
+        ;;
+    esac
+    database_count=$(cfg ".jobs[$job_index].source.databases[$database_index].databases | length")
+    for ((database_position = 0; database_position < database_count; database_position++)); do
+      database=$(cfg ".jobs[$job_index].source.databases[$database_index].databases[$database_position]")
+      artifact="$directory/$database.$extension"
+      if [[ ! -f $artifact || -L $artifact || ! -r $artifact ]]; then
+        log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=database-artifact-missing"
+        return 3
+      fi
+    done
+  done
+}
+
+compose_restore_print_plan() {
+  local job_index=$1
+  local staged=$2
+  local files_count file_index file volumes_count volume_index volume
+  local binds_count bind_index bind_name bind_path databases_count database_index database_name engine format
+  local directory action globals
+  local staged_root=$RESTORE_DIRECTORY
+
+  if [[ $staged == false ]]; then
+    staged_root="$RESTORE_DIRECTORY (planned)"
+  fi
+  printf 'compose_restore backup_id=%s job=%s staging=%s\n' "$BACKUP_ID" "$(cfg ".jobs[$job_index].name")" "$staged_root"
+  files_count=$(cfg ".jobs[$job_index].source.files | length")
+  for ((file_index = 0; file_index < files_count; file_index++)); do
+    file=$(cfg ".jobs[$job_index].source.files[$file_index]")
+    printf 'compose_file source=%s\n' "$RESTORE_DIRECTORY/compose/$file"
+  done
+  volumes_count=$(cfg ".jobs[$job_index].source.volumes // [] | length")
+  for ((volume_index = 0; volume_index < volumes_count; volume_index++)); do
+    volume=$(cfg ".jobs[$job_index].source.volumes[$volume_index]")
+    printf 'compose_volume name=%s archive=%s\n' "$volume" "$RESTORE_DIRECTORY/volumes/$volume/data.tar"
+  done
+  binds_count=$(cfg ".jobs[$job_index].source.bind_mounts // [] | length")
+  for ((bind_index = 0; bind_index < binds_count; bind_index++)); do
+    bind_name=$(cfg ".jobs[$job_index].source.bind_mounts[$bind_index].name")
+    bind_path=$(cfg ".jobs[$job_index].source.bind_mounts[$bind_index].path")
+    printf 'compose_bind_mount name=%s source=%s target_relative=%s\n' "$bind_name" "$RESTORE_DIRECTORY/bind-mounts/$bind_name" "$bind_path"
+  done
+  databases_count=$(cfg ".jobs[$job_index].source.databases // [] | length")
+  for ((database_index = 0; database_index < databases_count; database_index++)); do
+    database_name=$(cfg ".jobs[$job_index].source.databases[$database_index].name")
+    engine=$(cfg ".jobs[$job_index].source.databases[$database_index].engine")
+    format=$(cfg ".jobs[$job_index].source.databases[$database_index].format // \"custom\"")
+    directory="$RESTORE_DIRECTORY/databases/$database_name"
+    case "$engine" in
+      postgres|mysql|mariadb) action=apply-available ;;
+      mssql|oracle) action=vendor-manual-required ;;
+      *) action=unsupported ;;
+    esac
+    printf 'compose_database name=%s engine=%s format=%s directory=%s action=%s\n' "$database_name" "$engine" "$format" "$directory" "$action"
+    globals=$(cfg ".jobs[$job_index].source.databases[$database_index].include_globals // false")
+    if [[ $engine == postgres && $globals == true ]]; then
+      printf 'compose_database_globals name=%s source=%s action=manual-review-required\n' "$database_name" "$directory/globals.sql"
+    fi
+  done
+  if [[ $COMPOSE_RESTORE_APPLY == false ]]; then
+    printf '%s\n' 'next=review-staged-data-and-prepare-an-isolated-target-project; use --project-dir DIRECTORY --apply --confirm only for logical PostgreSQL/MySQL/MariaDB imports'
+  fi
+}
+
+preflight_compose_restore_target() {
+  local job_index=$1
+  local project_dir=$2
+  local job_name canonical_project files_count file_index file source_file canonical_file
+  local services databases_count database_index service container_id
+
+  require_command docker
+  require_command grep
+  require_command realpath
+  validate_absolute_path restore-compose.project_dir "$project_dir"
+  job_name=$(cfg ".jobs[$job_index].name")
+  if [[ ! -d $project_dir || -L $project_dir || ! -r $project_dir || ! -x $project_dir ]]; then
+    log error "kind=compose-restore job=$job_name message=target-project-not-readable"
+    return 2
+  fi
+  canonical_project=$(realpath -e -- "$project_dir") || return 2
+  files_count=$(cfg ".jobs[$job_index].source.files | length")
+  for ((file_index = 0; file_index < files_count; file_index++)); do
+    file=$(cfg ".jobs[$job_index].source.files[$file_index]")
+    source_file="$project_dir/$file"
+    if [[ ! -f $source_file || -L $source_file || ! -r $source_file ]]; then
+      log error "kind=compose-restore job=$job_name file=$file message=target-compose-file-not-readable"
+      return 2
+    fi
+    canonical_file=$(realpath -e -- "$source_file") || return 2
+    if ! path_is_within "$canonical_file" "$canonical_project"; then
+      log error "kind=compose-restore job=$job_name file=$file message=target-compose-file-outside-project"
+      return 2
+    fi
+  done
+  if ! docker_compose_target_project "$job_index" "$project_dir" version >/dev/null \
+    || ! docker_compose_target_project "$job_index" "$project_dir" config --quiet >/dev/null; then
+    log error "kind=compose-restore job=$job_name message=target-compose-project-invalid-or-unavailable"
+    return 3
+  fi
+  services=$(docker_compose_target_project "$job_index" "$project_dir" config --services) || {
+    log error "kind=compose-restore job=$job_name message=target-compose-services-unavailable"
+    return 3
+  }
+  databases_count=$(cfg ".jobs[$job_index].source.databases // [] | length")
+  for ((database_index = 0; database_index < databases_count; database_index++)); do
+    service=$(cfg ".jobs[$job_index].source.databases[$database_index].service")
+    if ! grep -Fx -- "$service" <<<"$services" >/dev/null; then
+      log error "kind=compose-restore job=$job_name service=$service message=target-database-service-not-found"
+      return 2
+    fi
+    container_id=$(docker_compose_target_project "$job_index" "$project_dir" ps -q "$service") || {
+      log error "kind=compose-restore job=$job_name service=$service message=target-database-container-unavailable"
+      return 3
+    }
+    if [[ ! $container_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+      log error "kind=compose-restore job=$job_name service=$service message=target-database-container-not-running"
+      return 3
+    fi
+  done
+}
+
+compose_restore_apply_database() {
+  local job_index=$1
+  local database_index=$2
+  local project_dir=$3
+  local database_name engine format service user database_count database_position database artifact
+
+  database_name=$(cfg ".jobs[$job_index].source.databases[$database_index].name")
+  engine=$(cfg ".jobs[$job_index].source.databases[$database_index].engine")
+  format=$(cfg ".jobs[$job_index].source.databases[$database_index].format // \"custom\"")
+  service=$(cfg ".jobs[$job_index].source.databases[$database_index].service")
+  user=$(cfg ".jobs[$job_index].source.databases[$database_index].user")
+  database_count=$(cfg ".jobs[$job_index].source.databases[$database_index].databases | length")
+
+  for ((database_position = 0; database_position < database_count; database_position++)); do
+    database=$(cfg ".jobs[$job_index].source.databases[$database_index].databases[$database_position]")
+    case "$engine" in
+      postgres)
+        if [[ $format == custom ]]; then
+          artifact=$(compose_restore_database_artifact "$job_index" "$database_index" dump "$database") || return $?
+          if ! compose_target_exec_with_secret "$job_index" "$database_index" "$project_dir" PGPASSWORD "$service" \
+            pg_restore --clean --if-exists --no-owner --no-privileges --username "$user" --dbname "$database" <"$artifact"; then
+            log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=database-import-failed"
+            return 3
+          fi
+        else
+          artifact=$(compose_restore_database_artifact "$job_index" "$database_index" sql "$database") || return $?
+          if ! compose_target_exec_with_secret "$job_index" "$database_index" "$project_dir" PGPASSWORD "$service" \
+            psql --set=ON_ERROR_STOP=1 --username "$user" --dbname "$database" <"$artifact"; then
+            log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=database-import-failed"
+            return 3
+          fi
+        fi
+        ;;
+      mysql)
+        artifact=$(compose_restore_database_artifact "$job_index" "$database_index" sql "$database") || return $?
+        if ! compose_target_exec_with_secret "$job_index" "$database_index" "$project_dir" MYSQL_PWD "$service" \
+          mysql --user="$user" <"$artifact"; then
+          log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=database-import-failed"
+          return 3
+        fi
+        ;;
+      mariadb)
+        artifact=$(compose_restore_database_artifact "$job_index" "$database_index" sql "$database") || return $?
+        if ! compose_target_exec_with_secret "$job_index" "$database_index" "$project_dir" MYSQL_PWD "$service" \
+          mariadb --user="$user" <"$artifact"; then
+          log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name message=database-import-failed"
+          return 3
+        fi
+        ;;
+      *) return 2 ;;
+    esac
+    log info "event=compose-restore-database-applied job=$(cfg ".jobs[$job_index].name") database=$database_name engine=$engine service=$service target_project=$project_dir"
+  done
+}
+
+compose_restore_apply() {
+  local job_index=$1
+  local databases_count database_index database_name engine
+
+  databases_count=$(cfg ".jobs[$job_index].source.databases // [] | length")
+  if ((databases_count == 0)); then
+    log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") message=no-logical-database-dumps-configured"
+    return 2
+  fi
+  for ((database_index = 0; database_index < databases_count; database_index++)); do
+    database_name=$(cfg ".jobs[$job_index].source.databases[$database_index].name")
+    engine=$(cfg ".jobs[$job_index].source.databases[$database_index].engine")
+    case "$engine" in
+      postgres|mysql|mariadb) : ;;
+      mssql|oracle)
+        log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") database=$database_name engine=$engine message=vendor-manual-recovery-required"
+        return 2
+        ;;
+      *) return 2 ;;
+    esac
+  done
+  preflight_compose_restore_target "$job_index" "$COMPOSE_RESTORE_PROJECT_DIRECTORY" || return $?
+  for ((database_index = 0; database_index < databases_count; database_index++)); do
+    compose_restore_apply_database "$job_index" "$database_index" "$COMPOSE_RESTORE_PROJECT_DIRECTORY" || return $?
+  done
+}
+
+restore_compose_command() {
+  local job_index result
+
+  if job_index=$(compose_restore_prepare); then
+    :
+  else
+    result=$?
+    return "$result"
+  fi
+  if restore_command; then
+    :
+  else
+    result=$?
+    return "$result"
+  fi
+  if [[ $DRY_RUN == true ]]; then
+    compose_restore_print_plan "$job_index" false
+    log info "event=plan-compose-restore backup_id=$BACKUP_ID destination=$BACKUP_DESTINATION_NAME to=$RESTORE_DIRECTORY"
+    return 0
+  fi
+  compose_restore_validate_staged_artifacts "$job_index" || return $?
+  compose_restore_print_plan "$job_index" true
+  if [[ $COMPOSE_RESTORE_APPLY == false ]]; then
+    log info "event=compose-restore-staged backup_id=$BACKUP_ID destination=$BACKUP_DESTINATION_NAME to=$RESTORE_DIRECTORY"
+    return 0
+  fi
+  compose_restore_apply "$job_index" || return $?
+  log info "event=compose-restore-applied backup_id=$BACKUP_ID destination=$BACKUP_DESTINATION_NAME to=$RESTORE_DIRECTORY target_project=$COMPOSE_RESTORE_PROJECT_DIRECTORY"
 }
 
 pin_command() {
@@ -5145,6 +5870,7 @@ prune_command() {
 doctor_command() {
   # Doctor is intentionally stricter than run: it reports every configured
   # destination that cannot be reached or prepared before a scheduled run.
+  preflight_prometheus_metrics
   preflight_selected_jobs true
   local index name destination_count destination_position destination_name destination_index
   local -A checked_destinations=()
@@ -5548,7 +6274,7 @@ parse_global_options() {
         usage
         exit 0
         ;;
-      run|doctor|list|status|watchdog|diff|pin|unpin|verify|restore|prune|delete|quick|quick-compose)
+      run|doctor|list|status|watchdog|diff|pin|unpin|verify|restore|restore-compose|prune|delete|quick|quick-compose)
         COMMAND=$1
         shift
         REMAINING_ARGUMENTS=("$@")
@@ -5835,6 +6561,56 @@ parse_command_options() {
         esac
       done
       ;;
+    restore-compose)
+      (($# > 0)) || command_error "missing-backup-id command=restore-compose"
+      BACKUP_REFERENCE=$1
+      shift
+      while (($# > 0)); do
+        case "$1" in
+          --job)
+            (($# >= 2)) || command_error "missing-value option=--job"
+            SELECTED_JOB=$2
+            shift 2
+            ;;
+          --from)
+            (($# >= 2)) || command_error "missing-value option=--from"
+            SELECTED_DESTINATION=$2
+            shift 2
+            ;;
+          --to)
+            (($# >= 2)) || command_error "missing-value option=--to"
+            RESTORE_DIRECTORY=$2
+            shift 2
+            ;;
+          --project-dir)
+            (($# >= 2)) || command_error "missing-value option=--project-dir"
+            COMPOSE_RESTORE_PROJECT_DIRECTORY=$2
+            shift 2
+            ;;
+          --apply)
+            COMPOSE_RESTORE_APPLY=true
+            shift
+            ;;
+          --confirm)
+            COMPOSE_RESTORE_CONFIRMED=true
+            shift
+            ;;
+          -n|--dry-run)
+            DRY_RUN=true
+            shift
+            ;;
+          *) command_error "unknown-option command=restore-compose value=$1" ;;
+        esac
+      done
+      [[ -n $RESTORE_DIRECTORY ]] || command_error "restore-compose-requires-to"
+      if [[ $COMPOSE_RESTORE_APPLY == true ]]; then
+        [[ -n $COMPOSE_RESTORE_PROJECT_DIRECTORY ]] || command_error "restore-compose-apply-requires-project-dir"
+        [[ $COMPOSE_RESTORE_CONFIRMED == true ]] || command_error "restore-compose-apply-requires-confirm"
+        [[ $DRY_RUN == false ]] || command_error "restore-compose-apply-does-not-support-dry-run"
+      elif [[ -n $COMPOSE_RESTORE_PROJECT_DIRECTORY || $COMPOSE_RESTORE_CONFIRMED == true ]]; then
+        command_error "restore-compose-project-dir-and-confirm-require-apply"
+      fi
+      ;;
     verify|restore)
       if [[ $COMMAND == restore ]]; then
         local argument has_pick=false pick_seen=false
@@ -5952,7 +6728,7 @@ main() {
   validate_config
 
   case "$COMMAND" in
-    run|prune|restore|watchdog|doctor) initialize_notifications ;;
+    run|prune|restore|restore-compose|watchdog|doctor) initialize_notifications ;;
   esac
 
   case "$COMMAND" in
@@ -5986,6 +6762,28 @@ main() {
       fi
       bf_notify_result restore "$restore_result"
       return "$restore_result"
+      ;;
+    restore-compose)
+      local compose_restore_result compose_restore_job
+      if restore_compose_command; then
+        compose_restore_result=0
+      else
+        compose_restore_result=$?
+      fi
+      BACKFORT_EVENT_ID=${BACKUP_ID:-$BACKUP_REFERENCE}
+      BACKFORT_EVENT_TARGET=$RESTORE_DIRECTORY
+      BACKFORT_EVENT_STAGE=compose-restore
+      BACKFORT_EVENT_ERROR=''
+      BACKFORT_EVENT_EXTRA=''
+      BACKFORT_EVENT_JOB=${SELECTED_JOB:-}
+      if [[ -n $BACKUP_ID ]] && compose_restore_job=$(selected_metadata_value '.job // ""'); then
+        BACKFORT_EVENT_JOB=$compose_restore_job
+      fi
+      if ((compose_restore_result != 0)); then
+        BACKFORT_EVENT_ERROR='compose restore did not complete'
+      fi
+      bf_notify_result restore "$compose_restore_result"
+      return "$compose_restore_result"
       ;;
     delete) delete_period_command ;;
     prune)

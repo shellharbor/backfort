@@ -97,4 +97,5 @@ The Compose recovery config is saved below
 `$HOME/.local/state/backfort/quick-compose/`.
 
 Read [Docker Compose and Databases](Docker-Compose-and-Databases) before using
-a database volume or restoring a database dump.
+a database volume or restoring a database dump. For the complete source-to-new
+host procedure, use [Compose Migration](Compose-Migration).

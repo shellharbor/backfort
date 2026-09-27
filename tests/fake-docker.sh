@@ -120,7 +120,14 @@ case "${1:-}" in
         shift
         case "$executable" in
           pg_dump)
-            if [[ " $* " == *' --format=plain '* ]]; then
+            format=custom
+            for argument in "$@"; do
+              if [[ $argument == --format=plain ]]; then
+                format=plain
+                break
+              fi
+            done
+            if [[ $format == plain ]]; then
               printf 'postgres plain SQL dump for %s\n' "$service"
             else
               printf 'postgres custom dump for %s\n' "$service"
@@ -131,6 +138,10 @@ case "${1:-}" in
             ;;
           mysqldump|mariadb-dump)
             printf 'mysql logical dump for %s\n' "$service"
+            ;;
+          pg_restore|psql|mysql|mariadb)
+            cat >/dev/null
+            log "compose-restore $service $executable"
             ;;
           sqlcmd)
             query=""
@@ -148,9 +159,16 @@ case "${1:-}" in
             printf 'mssql native backup\n' >"$target"
             ;;
           sh)
-            dumpfile=${@: -2:1}
-            logfile=${@: -1}
-            directory=${@: -3:1}
+            arguments=("$@")
+            argument_count=${#arguments[@]}
+            ((argument_count >= 5)) || exit 64
+            dumpfile=${arguments[$((argument_count - 2))]}
+            logfile=${arguments[$((argument_count - 1))]}
+            directory_name=${arguments[$((argument_count - 3))]}
+            case "$directory_name" in
+              DATA_PUMP_DIR) directory='/opt/oracle/admin/FREE/dpdump' ;;
+              *) exit 64 ;;
+            esac
             dump_target=$(container_file "fake-$service" "$directory/$dumpfile")
             log_target=$(container_file "fake-$service" "$directory/$logfile")
             mkdir -p -- "$(dirname -- "$dump_target")"

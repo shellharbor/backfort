@@ -15,6 +15,10 @@ settings:
   lock_file: /run/backfort.lock
   min_free_mb: 1024
 
+metrics:
+  prometheus:
+    textfile_directory: /var/lib/node_exporter/textfile_collector
+
 destinations:
   - name: local
     type: local
@@ -52,6 +56,24 @@ jobs:
 All filesystem paths must be absolute. Backfort rejects `/`, traversal (`..`),
 and self-referential source/destination layouts.
 
+## Prometheus textfile metrics
+
+The optional `metrics.prometheus` block publishes the outcome of each real
+saved-job run to node_exporter's textfile collector:
+
+```yaml
+metrics:
+  prometheus:
+    textfile_directory: /var/lib/node_exporter/textfile_collector
+```
+
+`textfile_directory` is required when `prometheus` is present. It must be an
+absolute, existing, writable directory and cannot be a symlink. Backfort does
+not create it: provision its ownership/permissions explicitly so the Backfort
+account can write and node_exporter can read. See [Monitoring and
+Metrics](Monitoring-and-Metrics) for the metric contract, safe file lifecycle,
+and alert examples.
+
 ## File sources and excludes
 
 `paths` is an explicit list. Directories are archived recursively and files are
@@ -71,6 +93,42 @@ source:
 
 Keep `follow_symlinks: false` unless following the target is intentional.
 Following a symlink can include data outside the visible source tree.
+
+## Lifecycle hooks
+
+Saved jobs can quiesce an application before Backfort begins the archive
+pipeline, then undo that change afterwards. Hooks are executable files with
+literal argument arrays; they are not shell command strings:
+
+```yaml
+hooks:
+  pre:
+    path: /usr/local/lib/backfort/hooks/crm-maintenance
+    args: [enable]
+  post:
+    path: /usr/local/lib/backfort/hooks/crm-maintenance
+    args: [disable]
+```
+
+The Backfort execution account must own each hook. It must be a regular
+executable file, not a symlink, and group/other write permissions are rejected.
+`doctor` checks this before a scheduled run. `--dry-run run` shows the planned
+hooks without executing them.
+
+Hooks receive a scrubbed environment, a safe system `PATH`, `LANG=C`, and only
+the non-secret `BACKFORT_HOOK_PHASE`, `BACKFORT_HOOK_JOB`,
+`BACKFORT_HOOK_BACKUP_ID`, `BACKFORT_HOOK_CONFIG_FILE`,
+`BACKFORT_HOOK_SOURCE_TYPE`, `BACKFORT_HOOK_RESULT`, and
+`BACKFORT_HOOK_EXIT_CODE` values. Do not place credentials in hook arguments
+or YAML. A hook needing a credential must obtain it itself from protected local
+state.
+
+A failed `pre` hook stops archive creation. When `post` exists it is invoked
+after the pre hook has returned, including after a pre failure, so it must be
+idempotent. A failed post hook makes the Backfort command fail even if the
+payload has already been published. Backfort attempts post cleanup after
+ordinary `INT`/`TERM` during the backup pipeline; `SIGKILL` and power loss
+remain the hook author's recovery responsibility.
 
 ## Copy policy
 
@@ -115,4 +173,5 @@ repository commit.
 
 Continue with [Destinations and S3](Destinations-and-S3) for offsite storage
 and [Automation and Notifications](Automation-and-Notifications) for scheduled
-runs.
+runs. Monitoring is documented separately in [Monitoring and
+Metrics](Monitoring-and-Metrics).

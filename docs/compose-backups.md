@@ -1,6 +1,6 @@
 # Docker Compose backup contract
 
-Docker Compose recovery is implemented in Backfort 0.3. This document defines
+Docker Compose recovery is implemented in Backfort 0.5. This document defines
 the safety boundary of that adapter and the operator responsibilities that
 remain intentionally manual during a restore.
 
@@ -53,7 +53,7 @@ jobs:
           databases: [analytics]
 ```
 
-This is valid 0.3 configuration after replacing placeholder values. `volumes`
+This is valid 0.5 configuration after replacing placeholder values. `volumes`
 contains logical Compose volume names, not host mount paths. Backfort resolves
 them through `docker compose config` and archives them through a helper image
 that must already exist locally; it will not pull images during a backup.
@@ -69,7 +69,7 @@ that must already exist locally; it will not pull images during a backup.
   temporary helper container with network disabled, a read-only root filesystem
   and a read-only source-volume mount. They are best-effort unless a storage
   snapshot integration is added later.
-- Backfort 0.3 does not stop services. Any future stop operation must record
+- Backfort 0.5 does not stop services. Any future stop operation must record
   exactly which services it stopped and restart those services in an
   unconditional cleanup path.
 - Bind mounts and `.env` files are never copied implicitly. They require an
@@ -157,9 +157,24 @@ required destinations will be added with the Compose adapter.
    `volumes/<name>/data.tar` into its matching recovery volume with the same
    helper image.
 4. Restore bind-mount contents only into an isolated recovery path.
-5. Restore each database artifact with its engine-specific import tool, then
-   start the recovery project and validate the application.
+5. For PostgreSQL, MySQL, and MariaDB, optionally use the explicit Compose
+   restore assistant after the target database services are running:
 
-Backfort intentionally does not automate steps 2–5. A future restore drill can
-orchestrate them in disposable infrastructure; production recovery must remain
-an explicit, reviewable operation.
+   ```bash
+   backfort.sh -c /etc/backfort/config.yaml \
+     restore-compose latest --job crm-production --to /srv/recovery/crm-import \
+     --project-dir /srv/crm-recovery --apply --confirm
+   ```
+
+   It verifies and stages the archive first, checks the target Compose project
+   and running database services, then invokes the matching client inside each
+   database container. It never copies recovered project files, unpacks
+   volumes, or starts services. PostgreSQL global roles, MS SQL Server, and
+   Oracle remain manual vendor procedures; an apply is rejected before any
+   import when its job includes MS SQL or Oracle.
+6. Start the recovery project and validate the application.
+
+Backfort intentionally does not automate project deployment, volume restoration,
+or service startup. A restore drill can orchestrate those disposable
+infrastructure steps; production recovery remains an explicit, reviewable
+operation.

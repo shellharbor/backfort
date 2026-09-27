@@ -76,7 +76,7 @@ BACKUP_ID=$(basename -- "$(find "$REMOTE_BUNDLE_DIRECTORY" -maxdepth 1 -name '*.
 [[ -f $REMOTE_BUNDLE_DIRECTORY/$BACKUP_ID.pinned ]]
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" list --job remote-smoke --json >"$TEST_DIRECTORY/pinned-list.json"
 [[ $(yq eval '.[0].pinned' "$TEST_DIRECTORY/pinned-list.json") == true ]]
-[[ $(yq eval '.[0].pinned_reason' "$TEST_DIRECTORY/pinned-list.json") == 'remote recovery point' ]]
+[[ $(yq eval -r '.[0].pinned_reason' "$TEST_DIRECTORY/pinned-list.json") == 'remote recovery point' ]]
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" unpin "$BACKUP_ID" --from remote
 [[ ! -e $REMOTE_BUNDLE_DIRECTORY/$BACKUP_ID.pinned ]]
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" status --job remote-smoke | grep -q $'remote-smoke\tremote'

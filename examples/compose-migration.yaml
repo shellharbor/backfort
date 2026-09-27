@@ -1,0 +1,62 @@
+# Repeatable Docker Compose server-migration plan. This creates an independent
+# local staging copy and an rclone transfer copy. Replace all paths, the rclone
+# remote, the helper-image digest, and environment-variable names before use.
+# Run `backfort.sh -c compose-migration.yaml doctor` before the migration window.
+
+version: 1
+
+settings:
+  host_id: crm-source-01
+  state_directory: /var/lib/backfort
+  temp_directory: /var/tmp/backfort
+  lock_file: /run/backfort.lock
+  min_free_mb: 4096
+
+destinations:
+  - name: local-staging
+    type: local
+    path: /var/backups/backfort-migration
+
+  # The first path component is the S3/R2 bucket. Configure this remote with
+  # `rclone config` outside the YAML file.
+  - name: transfer-r2
+    type: rclone
+    remote: cloudflare-r2
+    path: backfort-migrations/crm
+
+jobs:
+  - name: crm-server-move
+    source:
+      type: docker_compose
+      project_dir: /srv/crm
+
+      # Nothing is included implicitly: list every Compose and environment file
+      # required to recreate the project on the target host.
+      files: [compose.yaml, .env]
+
+      # Include non-database persistent volumes only. PostgreSQL consistency is
+      # supplied by the logical dump below, not a live database volume copy.
+      volumes: [uploads]
+      volume_helper_image: registry.example/backfort-volume-helper@sha256:REPLACE_WITH_DIGEST
+
+      bind_mounts:
+        - name: uploads
+          path: data/uploads
+
+      databases:
+        - name: crm-postgres
+          service: postgres
+          engine: postgres
+          user: backfort
+          password_env: BACKFORT_PG_PASSWORD
+          databases: [crm]
+          # Plain SQL is convenient for a one-time migration import with psql.
+          format: sql
+
+    destinations: [local-staging, transfer-r2]
+    # A move must not be called successful until both the staging and target
+    # transfer copies are complete.
+    success: {min_copies: 2}
+    compression: {method: zstd, level: 6}
+    encryption: {method: none}
+    retention: {keep_last: 2, keep_daily: 0, keep_weekly: 0, keep_monthly: 0}

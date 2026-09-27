@@ -19,6 +19,8 @@ from the failed run, but remove any unrelated system secrets before sharing it.
 | A backup is partial | One or more destinations failed but another copy succeeded. Read the destination lines, fix the failed copy, then run again. |
 | No backup appears in `list` | Only versions with `.complete` are listed. An interrupted upload is intentionally hidden and must be recreated. |
 | `another-run-is-active` | A mutating Backfort command owns the global lock. Let it finish; do not delete lock files to force a second writer. |
+| `prometheus-textfile-directory-not-usable` | Create the configured textfile directory, make it writable by the Backfort execution account, readable by node_exporter, and ensure it is not a symlink. Run `doctor` after correcting it. |
+| `kind=metrics` warning after a run | The backup result is unchanged, but Prometheus was not updated. Restore the collector directory and permissions, then run Backfort again to publish fresh gauges. |
 | Volume snapshot fails | The Docker daemon, project, volume and trusted helper image must be available to the account that runs Backfort. |
 | Database dump fails | Verify service name, engine, database, user and password environment variable. Ensure the necessary client is in the database container. |
 | Restore refuses a target | Restore into a new or empty explicit directory; inspect a staging restore before replacing live data. |
@@ -56,3 +58,17 @@ Collect the Backfort version, operating-system version, command invoked,
 redacted output from `doctor`, and relevant structured log lines. State whether
 the target is local storage or a named rclone remote. Never include passwords,
 encryption identities, Telegram tokens, or cloud access keys.
+
+## Maintainers: release checks
+
+Before publishing a release, run the repository checks on a fresh Linux
+checkout. The CLI and its test adapters must retain their executable bits, and
+the full suite must run with Mike Farah `yq` v4—the only supported YAML
+implementation. Keep the version reported by `backfort.sh --version`, the
+release-ready Changelog heading, and the eventual Git tag aligned. The
+`Release metadata` GitHub workflow rejects a `vX.Y.Z` tag unless the CLI
+reports the same non-development version and `CHANGELOG.md` has an exact
+`## X.Y.Z` heading. Include a
+full verification and staged restore of an rclone copy: it proves that a
+downloaded remote payload is both checked and streamed as the local verified
+artifact.

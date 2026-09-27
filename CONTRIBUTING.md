@@ -18,8 +18,10 @@ small, reviewable changes with clear safety and recovery behavior.
 ## Development setup
 
 Backfort targets Linux with Bash 4.3+, GNU userland, and Mike Farah `yq` v4.
-The CI workflow documents the complete test environment. Start with a syntax
-check and the main smoke test:
+The CI workflow documents the complete test environment; it also checks Bash
+4.3 syntax. CodeQL reviews GitHub Actions definitions, OpenSSF Scorecard
+publishes supply-chain findings, and a release tag is checked against the CLI
+version and Changelog. Start with a syntax check and the main smoke test:
 
 ```bash
 bash -n backfort.sh tests/*.sh
@@ -33,13 +35,15 @@ shellcheck backfort.sh tests/*.sh
 ```
 
 Run the focused test for the changed surface. The suite includes quick backup,
-rclone, Docker Compose, crypto/signing, watchdog, diff, pins, date-range
-deletion, interactive restore selection, and notifications:
+rclone, Docker Compose and its restore assistant, crypto/signing, watchdog,
+diff, pins, date-range deletion, interactive restore selection, notifications,
+lifecycle hooks, and Prometheus metrics:
 
 ```bash
 bash tests/quick.sh
 bash tests/rclone-smoke.sh
 bash tests/compose-smoke.sh
+bash tests/restore-compose.sh
 bash tests/crypto-smoke.sh
 bash tests/watchdog.sh
 bash tests/diff.sh
@@ -47,10 +51,16 @@ bash tests/pinned.sh
 bash tests/delete-period.sh
 bash tests/pick.sh
 bash tests/notify.sh
+bash tests/hooks.sh
+bash tests/metrics.sh
 ```
 
 The tests are intentionally hermetic: use their temporary fake Docker and
 rclone boundaries rather than live cloud storage.
+
+GitHub Actions also runs a Documentation workflow for local Markdown links in
+the README, Wiki sources, examples, and community files. Keep public links
+relative when they point inside this repository so that check can protect them.
 
 ## What a good contribution includes
 

@@ -70,11 +70,12 @@ make_complete_bundle() {
   printf 'test payload\n' >"$payload"
   printf 'checksum is not verified by watchdog\n' >"$destination/$backup_id.sha256"
   cat >"$destination/$backup_id.metadata.json" <<EOF
-backup_id: "$backup_id"
-job: watchdog
-payload_file: "$backup_id.tar.gz"
-signing:
-  method: none
+{
+  "backup_id": "$backup_id",
+  "job": "watchdog",
+  "payload_file": "$backup_id.tar.gz",
+  "signing": {"method": "none"}
+}
 EOF
   printf '%s\n' "$backup_id" >"$destination/$backup_id.complete"
 }
@@ -95,6 +96,18 @@ grep -Fq 'watchdog-max-age-required' "$TEST_DIRECTORY/missing-max-age.stderr"
 CURRENT_BACKUP_ID=$(basename -- "$(find "$BACKUP_DIRECTORY" -maxdepth 1 -name '*.complete' -print -quit)" .complete)
 WATCHDOG_OUTPUT=$("$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" watchdog --max-age 1)
 grep -Fq "job=watchdog backup_id=$CURRENT_BACKUP_ID" <<<"$WATCHDOG_OUTPUT"
+
+# The threshold accepts the documented upper bound and rejects the next hour.
+"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" watchdog --max-age 8760 >/dev/null
+if "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" watchdog --max-age 8761 \
+  >"$TEST_DIRECTORY/invalid-max-age.stdout" 2>"$TEST_DIRECTORY/invalid-max-age.stderr"; then
+  printf 'expected out-of-range watchdog threshold to be rejected\n' >&2
+  exit 1
+else
+  INVALID_MAX_AGE_RESULT=$?
+fi
+[[ $INVALID_MAX_AGE_RESULT -eq 2 ]]
+grep -Fq 'watchdog-max-age-out-of-range min=1 max=8760' "$TEST_DIRECTORY/invalid-max-age.stderr"
 
 # A held run/prune lock must not delay a read-only watchdog invocation.
 exec {LOCK_FD}>"$TEST_DIRECTORY/backfort.lock"
