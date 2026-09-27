@@ -5,6 +5,16 @@ once a release is tagged.
 
 ## Unreleased 0.5.0
 
+- Added `retention.min_keep`, a positive per-destination recovery floor that
+  defaults to one newest ordinary completed copy. GFS rotation and
+  `max_age_days` never remove that floor.
+- Hardened local bundle durability: Backfort synchronizes required artifacts
+  before publishing `.complete`, then synchronizes the marker and destination
+  directory. Local deletion now removes `.complete` before payload evidence.
+- Moved symmetric-GPG and recovery-key passphrases from Bash here-strings to a
+  pipe-backed file descriptor so older Bash versions do not materialize them
+  in a temporary file.
+
 - Added per-file SHA-256 values for regular archive files in new manifests.
   Full verification and normal restore recompute them from the tar stream,
   detecting changed archive content even when an outer payload checksum was
@@ -82,6 +92,27 @@ once a release is tagged.
 
 ### Fixed
 
+- Made `run` turn per-job preflight errors into observable operational failures:
+  it writes the failed Prometheus result when the collector is usable, emits the
+  standard `failure` event with `stage=preflight`, and continues independent
+  selected jobs. Compose database password environment variables are now
+  checked before any dump command starts; `doctor` retains its strict code-2
+  validation behavior. A broken Prometheus collector cannot receive a metric,
+  but now sends the same preflight alert without starting backup work.
+- Scoped automatic discovery in shared local and rclone destinations to the
+  configured `host_id`. `list`, `status`, `latest`, interactive picking,
+  watchdog, retention, and date-range deletion now ignore other hosts' IDs
+  before validation, so a foreign malformed object cannot block maintenance or
+  a foreign fresh copy cannot hide a stale host.
+- Made `quick` and `quick-compose` include the local hostname in their
+  generated host IDs; `BACKFORT_QUICK_HOST_ID` provides a deliberate override
+  for environments where hostnames are not unique.
+- Made temporary-workspace creation an explicit operational failure rather than
+  allowing later paths to be formed from an empty directory. Added real Bash
+  4.3 runtime coverage for empty argument arrays, not only a syntax check.
+- Kept Compose volume helpers networkless and read-only while adding only
+  `DAC_READ_SEARCH`, allowing snapshots of application-owned `0700` data
+  without restoring broad container capabilities.
 - Made full verification and staged restore stream a materialized rclone
   payload from its verified local temporary file instead of incorrectly passing
   that local path back to `rclone cat`.

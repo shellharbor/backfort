@@ -21,8 +21,9 @@ Keep `prune` separate from `run`: the least-privilege account used for creation
 need not automatically receive deletion rights for every cloud destination.
 
 For Prometheus textfile metrics emitted by these runs, see [Monitoring and
-Metrics](Monitoring-and-Metrics). The metric file is updated only after a real
-job attempt; it does not replace the independent backup-freshness `watchdog`.
+Metrics](Monitoring-and-Metrics). The metric file is updated after each
+persistent selected job attempt, including its failed preflight; it does not
+replace the independent backup-freshness `watchdog`.
 
 ## Lifecycle-hook scheduling
 
@@ -123,6 +124,12 @@ The fixed events are `success`, `partial`, `failure`, `recovery`, `watchdog`,
 `restore_success`, `restore_failure`, and `prune`. Delivery problems are
 warnings: a notification outage does not replace the backup operation's result.
 Run `backfort.sh doctor` to see channel readiness without exposing secret values.
+
+When a selected job cannot pass `run` preflight, Backfort sends the normal
+`failure` event with `stage=preflight`, no backup ID, and a redacted generic
+error. The structured log retains the actionable cause (such as a missing source
+or database password variable), and the remaining selected jobs continue. This
+means one bad Compose project does not hide a healthy job's scheduled backup.
 
 Text templates can use `{{job}}`, `{{id}}`, `{{error}}`, `{{destinations}}`,
 `{{failed_destinations}}`, `{{restore_hint}}`, `{{last_backup_age}}`,

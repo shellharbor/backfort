@@ -56,9 +56,14 @@ source:
 ```
 
 The Docker daemon must be available to the account running Backfort, and the
-helper needs a writable target mount. Run `backfort.sh doctor` after setting this
-up: it checks Docker and reports unavailable prerequisites before the backup
-window.
+helper needs a writable target mount. Backfort gives the helper no network, a
+read-only root filesystem, a read-only source volume, and no Linux
+capabilities except `DAC_READ_SEARCH`. That single capability lets a trusted
+`tar` helper traverse application-owned `0700` volume directories without
+granting write, network, or general privilege. Pin an image that includes
+`tar` and runs the helper command as root. Run `backfort.sh doctor` after
+setting this up: it checks Docker and reports unavailable prerequisites before
+the backup window.
 
 ## Database dumps
 
@@ -109,6 +114,11 @@ databases:
 
 Do not put a password literal in the YAML. Arrange for the environment variable
 to be set by the scheduler, systemd credential mechanism, or a secret manager.
+`doctor` verifies that every configured Compose database password variable is
+non-empty before the backup window. During a multi-job `run`, an unset variable
+fails only that job at `stage=preflight`, records a failed Prometheus result
+when metrics are enabled, sends the normal failure event, and lets independent
+jobs continue. No dump container is started for that failed job.
 
 ## Recommended recovery sequence
 

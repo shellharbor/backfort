@@ -33,7 +33,8 @@ creates it automatically.
 ## File lifecycle and safety
 
 After each non-dry-run `run`, Backfort writes and atomically renames one file
-per saved job:
+per selected saved job, including a job that fails its individual preflight
+before any archive is created:
 
 ```text
 /var/lib/node_exporter/textfile_collector/backfort_application.prom
@@ -49,6 +50,15 @@ describe an attempted persistent backup job only. A metrics write failure after
 the backup begins emits a structured `kind=metrics` warning and does not alter
 the backup's exit code; a recoverable backup must not become a failure because
 observability had an outage.
+
+For a failed job preflight, `run` writes `success = 0`, `exit_code = 3`, zero
+duration, payload size, and copy counts; it also emits the ordinary `failure`
+notification with `stage=preflight` and continues with other selected jobs.
+This covers missing sources, unavailable Compose prerequisites, and an unset
+database `password_env`. `doctor` intentionally remains strict and exits `2`
+on the same condition. If the configured collector directory itself is not
+usable, no metric can be written: Backfort stops before backup work and sends a
+preflight failure notification for each selected job.
 
 The files are mode `0644` so node_exporter can read them. They contain only the
 validated `host` and `job` labels plus numeric values. They never include

@@ -1027,7 +1027,7 @@ validate_config() {
   done
 
   local source_type destinations_count compression compression_level encryption signing
-  local keep_last keep_daily keep_weekly keep_monthly max_age_days destination_name destination_index env_name minimum_copies
+  local keep_last keep_daily keep_weekly keep_monthly min_keep max_age_days destination_name destination_index env_name minimum_copies
   local recipient_count recipient_index recipient_env password_env identity_password_env
 
   for ((index = 0; index < JOB_COUNT; index++)); do
@@ -1173,18 +1173,21 @@ validate_config() {
     if [[ $(cfg "(.jobs[$index].retention // {}) | type") != '!!map' ]]; then
       config_error "retention-must-be-map job=$name"
     fi
-    validate_keys ".jobs[$index].retention // {}" 'keep_last keep_daily keep_weekly keep_monthly max_age_days'
+    validate_keys ".jobs[$index].retention // {}" 'keep_last keep_daily keep_weekly keep_monthly min_keep max_age_days'
     keep_last=$(cfg ".jobs[$index].retention.keep_last // 3")
     keep_daily=$(cfg ".jobs[$index].retention.keep_daily // 0")
     keep_weekly=$(cfg ".jobs[$index].retention.keep_weekly // 0")
     keep_monthly=$(cfg ".jobs[$index].retention.keep_monthly // 0")
+    min_keep=$(cfg ".jobs[$index].retention.min_keep // 1")
     max_age_days=$(cfg ".jobs[$index].retention.max_age_days // 0")
     validate_integer "jobs[$index].retention.keep_last" "$keep_last"
     validate_integer "jobs[$index].retention.keep_daily" "$keep_daily"
     validate_integer "jobs[$index].retention.keep_weekly" "$keep_weekly"
     validate_integer "jobs[$index].retention.keep_monthly" "$keep_monthly"
+    validate_integer "jobs[$index].retention.min_keep" "$min_keep"
     validate_integer "jobs[$index].retention.max_age_days" "$max_age_days"
     ((keep_last > 0)) || config_error "keep-last-must-be-positive job=$name"
+    ((min_keep > 0)) || config_error "min-keep-must-be-positive job=$name"
     if [[ $(cfg "(.jobs[$index].retention // {}) | has(\"max_age_days\")") == true ]] && ((max_age_days == 0)); then
       config_error "max-age-days-must-be-positive job=$name"
     fi
@@ -1296,7 +1299,7 @@ docker_compose_job() {
     file=$(cfg ".jobs[$job_index].source.files[$file_index]")
     compose_arguments+=(-f "$project_dir/$file")
   done
-  docker "${compose_arguments[@]}" "$@"
+  docker "${compose_arguments[@]+"${compose_arguments[@]}"}" "$@"
 }
 
 docker_compose_target_project() {
@@ -1311,7 +1314,7 @@ docker_compose_target_project() {
     file=$(cfg ".jobs[$job_index].source.files[$file_index]")
     compose_arguments+=(-f "$project_dir/$file")
   done
-  docker "${compose_arguments[@]}" "$@"
+  docker "${compose_arguments[@]+"${compose_arguments[@]}"}" "$@"
 }
 
 compose_volume_name() {
@@ -1368,7 +1371,7 @@ preflight_docker_compose_source() {
   local name=$2
   local project_dir canonical_project files_count file_index file source_file canonical_file
   local bind_count bind_index bind_name bind_path bind_source canonical_bind
-  local volume_count volume_index logical_volume docker_volume helper_image services database_count database_index service
+  local volume_count volume_index logical_volume docker_volume helper_image services database_count database_index service password_env
 
   require_command docker
   require_command grep
@@ -1425,6 +1428,9 @@ preflight_docker_compose_source() {
     service=$(cfg ".jobs[$index].source.databases[$database_index].service")
     grep -Fx -- "$service" <<<"$services" >/dev/null \
       || config_error "compose-database-service-not-found job=$name service=$service"
+    password_env=$(cfg ".jobs[$index].source.databases[$database_index].password_env")
+    [[ -n ${!password_env-} ]] \
+      || config_error "missing-environment-variable job=$name variable=$password_env"
   done
 }
 
@@ -1596,6 +1602,23 @@ preflight_prometheus_metrics() {
   [[ -n $PROMETHEUS_TEXTFILE_DIRECTORY ]] || return 0
   [[ -d $PROMETHEUS_TEXTFILE_DIRECTORY && ! -L $PROMETHEUS_TEXTFILE_DIRECTORY && -w $PROMETHEUS_TEXTFILE_DIRECTORY ]] \
     || config_error "prometheus-textfile-directory-not-usable path=$PROMETHEUS_TEXTFILE_DIRECTORY"
+}
+
+set_preflight_failure_event() {
+  local job_name=$1
+  local preflight_status=$2
+
+  BACKFORT_EVENT_JOB=$job_name
+  BACKFORT_EVENT_ID=''
+  BACKFORT_EVENT_SIZE=''
+  BACKFORT_EVENT_DURATION='0s'
+  BACKFORT_EVENT_DESTINATIONS=''
+  BACKFORT_EVENT_FAILED_DESTINATIONS=''
+  BACKFORT_EVENT_STAGE='preflight'
+  BACKFORT_EVENT_ERROR='job preflight failed; see Backfort log'
+  BACKFORT_EVENT_EXTRA="preflight_exit_code=$preflight_status"
+  BACKFORT_METRICS_SUCCESSFUL_COPIES=0
+  BACKFORT_METRICS_FAILED_COPIES=0
 }
 
 ensure_runtime_directories() {
@@ -2456,7 +2479,7 @@ notification_flush_digests() {
   shopt -s nullglob
   files=("$directory"/*.log)
   shopt -u nullglob
-  for file in "${files[@]}"; do
+  for file in "${files[@]+"${files[@]}"}"; do
     day=$(basename -- "$file" .log)
     [[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ && $day != "$today" ]] || continue
     contents=$(<"$file")
@@ -2633,7 +2656,11 @@ acquire_lock() {
 
 make_work_directory() {
   cleanup_work_directory
-  WORK_DIRECTORY=$(mktemp -d "$TEMP_DIRECTORY/backfort.XXXXXXXX")
+  if ! WORK_DIRECTORY=$(mktemp -d "$TEMP_DIRECTORY/backfort.XXXXXXXX"); then
+    WORK_DIRECTORY=""
+    log error "kind=workspace message=create-failed"
+    return 1
+  fi
 }
 
 new_backup_id() {
@@ -2642,6 +2669,19 @@ new_backup_id() {
   created_compact=$(date -u +'%Y%m%dT%H%M%SZ')
   random_part=$(printf '%08x' "$(( (10#$(date -u +%s) ^ $$ ^ RANDOM ^ (RANDOM << 8)) & 0xffffffff ))")
   printf '%s_%s_%s_%s\n' "$HOST_ID" "$job" "$created_compact" "$random_part"
+}
+
+# Automatic discovery is deliberately scoped to this configured host. A shared
+# bucket may contain healthy copies made by several servers with the same job
+# name; those copies are neither candidates nor errors for this host.
+backup_id_belongs_to_current_host() {
+  [[ $1 == "$HOST_ID"_* ]]
+}
+
+backup_id_belongs_to_current_host_job() {
+  local backup_id=$1
+  local job=$2
+  [[ $backup_id == "$HOST_ID"_"$job"_* ]]
 }
 
 artifact_extensions() {
@@ -2789,7 +2829,7 @@ snapshot_postgres_database() {
     database_name=$(cfg ".jobs[$job_index].source.databases[$database_index].databases[$database_position]")
     output="$snapshot_directory/$database_name.$extension"
     if ! compose_exec_with_secret "$job_index" "$database_index" PGPASSWORD "$service" \
-      pg_dump "${dump_arguments[@]}" --no-owner --no-privileges --username "$user" --dbname "$database_name" >"$output"; then
+      pg_dump "${dump_arguments[@]+"${dump_arguments[@]}"}" --no-owner --no-privileges --username "$user" --dbname "$database_name" >"$output"; then
       rm -f -- "$output"
       log error "kind=compose-dump engine=postgres service=$service database=$database_name message=dump-failed"
       return 3
@@ -2943,7 +2983,10 @@ snapshot_compose_volume() {
   docker_volume=$(compose_volume_name "$job_index" "$logical_volume") || return 3
   target="$snapshot_directory/volumes/$logical_volume"
   mkdir -p -- "$target"
-  if ! docker run --rm --pull=never --network none --read-only --cap-drop ALL \
+  # The helper stays networkless and read-only. DAC_READ_SEARCH is the minimum
+  # capability needed for root in the helper to traverse Docker volume content
+  # owned by an application UID (for example PostgreSQL's 0700 data directory).
+  if ! docker run --rm --pull=never --network none --read-only --cap-drop ALL --cap-add DAC_READ_SEARCH \
     -v "$docker_volume:/source:ro" -v "$target:/backup:rw" "$helper_image" \
     tar --create --file /backup/data.tar --directory /source .; then
     log error "kind=compose-volume job=$(cfg ".jobs[$job_index].name") volume=$logical_volume message=snapshot-failed"
@@ -3035,7 +3078,7 @@ pack_files_job() {
   done
   tar_arguments+=(--null --files-from "$list_file")
 
-  if ! tar "${tar_arguments[@]}"; then
+  if ! tar "${tar_arguments[@]+"${tar_arguments[@]}"}"; then
     log error "kind=pack message=source-pack-failed"
     return 3
   fi
@@ -3220,7 +3263,7 @@ encrypt_artifact() {
           age_arguments+=(--recipient "$recipient")
         done
       fi
-      if ! age "${age_arguments[@]}" --output "$output" "$input"; then
+      if ! age "${age_arguments[@]+"${age_arguments[@]}"}" --output "$output" "$input"; then
         return 3
       fi
       ;;
@@ -3230,7 +3273,7 @@ encrypt_artifact() {
         local secret=${!password_env-}
         if ! gpg --batch --yes --pinentry-mode loopback --cipher-algo AES256 --compress-algo none \
           --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
-          --passphrase-fd 3 --symmetric --output "$output" "$input" 3<<<"$secret"; then
+          --passphrase-fd 3 --symmetric --output "$output" "$input" 3< <(printf '%s' "$secret"); then
           secret=""
           return 3
         fi
@@ -3249,7 +3292,7 @@ encrypt_artifact() {
             gpg_arguments+=(--recipient "$recipient")
           done
         fi
-        if ! gpg "${gpg_arguments[@]}" --encrypt "$input"; then
+        if ! gpg "${gpg_arguments[@]+"${gpg_arguments[@]}"}" --encrypt "$input"; then
           return 3
         fi
       fi
@@ -3285,6 +3328,20 @@ atomic_copy() {
   local temporary="${destination}.partial.$$"
   rm -f -- "$temporary"
   cp -- "$source" "$temporary" && mv -- "$temporary" "$destination"
+}
+
+sync_published_local_paths() {
+  local destination_name=$1
+  local stage=$2
+  shift 2
+
+  # GNU sync -f flushes the filesystems holding these paths.  Publish the
+  # commit marker only after the payload evidence has reached durable storage,
+  # then flush the marker and its containing directory as a separate commit.
+  if ! sync -f -- "$@"; then
+    log error "kind=publish destination=$destination_name message=durability-sync-failed stage=$stage"
+    return 1
+  fi
 }
 
 prometheus_nonnegative_integer() {
@@ -3394,6 +3451,7 @@ publish_to_local_destination() {
   local signature=${6:-}
   local destination_name destination_path payload_name
   local final_payload final_metadata final_checksum final_signature final_complete marker_source
+  local -a published_objects
 
   destination_name=$(cfg ".destinations[$destination_index].name")
   destination_path=$(destination_local_path "$destination_index")
@@ -3404,6 +3462,8 @@ publish_to_local_destination() {
   [[ -z $signature ]] || final_signature="$destination_path/$(basename -- "$signature")"
   final_complete="$destination_path/$backup_id.complete"
   marker_source="$WORK_DIRECTORY/$backup_id.complete"
+  published_objects=("$final_payload" "$final_metadata" "$final_checksum")
+  [[ -z $signature ]] || published_objects+=("$final_signature")
 
   if ! mkdir -p -- "$destination_path"; then
     log error "kind=publish destination=$destination_name message=create-directory-failed"
@@ -3415,24 +3475,39 @@ publish_to_local_destination() {
     return 3
   fi
 
-  printf '%s\n' "$backup_id" >"$marker_source"
   if atomic_copy "$payload" "$final_payload" \
     && atomic_copy "$metadata" "$final_metadata" \
     && atomic_copy "$checksum" "$final_checksum" \
-    && { [[ -z $signature ]] || atomic_copy "$signature" "$final_signature"; } \
-    && atomic_copy "$marker_source" "$final_complete"; then
-    log info "event=backup-published destination=$destination_name backup_id=$backup_id"
-    return 0
+    && { [[ -z $signature ]] || atomic_copy "$signature" "$final_signature"; }; then
+    if ! sync_published_local_paths "$destination_name" artifacts \
+      "${published_objects[@]+"${published_objects[@]}"}"; then
+      rm -f -- "${published_objects[@]+"${published_objects[@]}"}"
+      return 3
+    fi
+  else
+    rm -f -- "${published_objects[@]+"${published_objects[@]}"}"
+    rm -f -- "$destination_path/$payload_name.partial.$$" \
+      "$destination_path/$backup_id.metadata.json.partial.$$" \
+      "$destination_path/$backup_id.sha256.partial.$$" \
+      "$destination_path/$(signature_filename "$backup_id").partial.$$" \
+      "$destination_path/$backup_id.complete.partial.$$"
+    log error "kind=publish destination=$destination_name message=atomic-publish-failed"
+    return 3
   fi
 
-  rm -f -- "$final_payload" "$final_metadata" "$final_checksum" "$final_signature" "$final_complete"
-  rm -f -- "$destination_path/$payload_name.partial.$$" \
-    "$destination_path/$backup_id.metadata.json.partial.$$" \
-    "$destination_path/$backup_id.sha256.partial.$$" \
-    "$destination_path/$(signature_filename "$backup_id").partial.$$" \
-    "$destination_path/$backup_id.complete.partial.$$"
-  log error "kind=publish destination=$destination_name message=atomic-publish-failed"
-  return 3
+  if ! printf '%s\n' "$backup_id" >"$marker_source" \
+    || ! atomic_copy "$marker_source" "$final_complete"; then
+    rm -f -- "$final_complete" "${published_objects[@]+"${published_objects[@]}"}"
+    log error "kind=publish destination=$destination_name message=atomic-publish-failed"
+    return 3
+  fi
+  if ! sync_published_local_paths "$destination_name" commit-marker "$final_complete" "$destination_path"; then
+    rm -f -- "$final_complete" "${published_objects[@]+"${published_objects[@]}"}"
+    return 3
+  fi
+
+  log info "event=backup-published destination=$destination_name backup_id=$backup_id"
+  return 0
 }
 
 publish_to_rclone_destination() {
@@ -3529,7 +3604,6 @@ run_job_backup() {
     return 0
   fi
 
-  make_work_directory
   started_seconds=$(date -u +%s)
   created_at=$(timestamp)
   backup_id=${configured_backup_id:-$(new_backup_id "$job_name")}
@@ -3544,6 +3618,12 @@ run_job_backup() {
   BACKFORT_EVENT_EXTRA=''
   BACKFORT_METRICS_SUCCESSFUL_COPIES=0
   BACKFORT_METRICS_FAILED_COPIES=0
+  if ! make_work_directory; then
+    BACKFORT_EVENT_STAGE='prepare'
+    BACKFORT_EVENT_ERROR='temporary work directory could not be created'
+    BACKFORT_EVENT_DURATION="$(( $(date -u +%s) - started_seconds ))s"
+    return 3
+  fi
   extension=$(artifact_extensions "$compression" "$encryption")
   payload_name="$backup_id$extension"
   manifest="$WORK_DIRECTORY/manifest.json"
@@ -3704,7 +3784,7 @@ run_job_hook() {
       BACKFORT_HOOK_SOURCE_TYPE="$(cfg ".jobs[$job_index].source.type")" \
       BACKFORT_HOOK_RESULT="$hook_result" \
       BACKFORT_HOOK_EXIT_CODE="$hook_exit_code" \
-      "$script" "${hook_arguments[@]}"
+      "$script" "${hook_arguments[@]+"${hook_arguments[@]}"}"
   ); then
     log info "event=hook-succeeded job=$job_name backup_id=$backup_id phase=$phase"
     return 0
@@ -3784,8 +3864,27 @@ run_command() {
   # A destination is an independent publish attempt.  Its availability is
   # checked by publish_to_destination so one failed copy can yield a partial
   # result instead of preventing every other destination from receiving data.
-  preflight_prometheus_metrics
-  preflight_selected_jobs false
+  local index name result=0 job_result preflight_status
+
+  # A bad collector directory cannot receive a metric. It still becomes a
+  # failure event for every selected persistent job, so operators are alerted
+  # instead of losing the scheduled run silently.
+  if (preflight_prometheus_metrics); then
+    :
+  else
+    preflight_status=$?
+    if [[ $DRY_RUN == false ]]; then
+      for ((index = 0; index < JOB_COUNT; index++)); do
+        name=$(cfg ".jobs[$index].name")
+        [[ -z $SELECTED_JOB || $name == "$SELECTED_JOB" ]] || continue
+        set_preflight_failure_event "$name" "$preflight_status"
+        BACKFORT_EVENT_ERROR='Prometheus metrics preflight failed; see Backfort log'
+        bf_notify_result run 3
+      done
+    fi
+    return 3
+  fi
+
   if [[ $DRY_RUN == false ]]; then
     require_command flock
     if ! acquire_lock; then
@@ -3793,11 +3892,21 @@ run_command() {
     fi
   fi
 
-  local index name result=0 job_result
   for ((index = 0; index < JOB_COUNT; index++)); do
     name=$(cfg ".jobs[$index].name")
     [[ -z $SELECTED_JOB || $name == "$SELECTED_JOB" ]] || continue
-    if run_job "$index"; then
+    # config_error deliberately exits with 2 for strict commands such as
+    # doctor. Run preflight in a subshell here so a single job can instead be
+    # recorded as an operational failure and the other selected jobs can run.
+    if (preflight_job "$index" false); then
+      preflight_status=0
+    else
+      preflight_status=$?
+    fi
+    if ((preflight_status != 0)); then
+      job_result=3
+      set_preflight_failure_event "$name" "$preflight_status"
+    elif run_job "$index"; then
       job_result=0
     else
       job_result=$?
@@ -4076,6 +4185,7 @@ backup_id_timestamp_seconds() {
   [[ $prefix == *"_$expected_job" ]] || return 1
   host=${prefix%_"$expected_job"}
   [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+  [[ $host == "$HOST_ID" ]] || return 1
 
   epoch=$(date -u -d "${timestamp_value:0:4}-${timestamp_value:4:2}-${timestamp_value:6:2} ${timestamp_value:9:2}:${timestamp_value:11:2}:${timestamp_value:13:2} UTC" +%s 2>/dev/null) \
     || return 1
@@ -4128,6 +4238,7 @@ watchdog_latest_backup() {
     destination_name=$(cfg ".jobs[$job_index].destinations[$destination_position]")
     destination_index=$(find_destination_index "$destination_name")
     while IFS= read -r -d '' backup_id; do
+      backup_id_belongs_to_current_host_job "$backup_id" "$job" || continue
       if [[ ! $backup_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
         printf 'event=watchdog-parse-error job=%s backup_id=%s parse_error=1\n' "$job" "$backup_id" >&2
         continue
@@ -4213,6 +4324,7 @@ list_command() {
   for ((destination_index = 0; destination_index < DESTINATION_COUNT; destination_index++)); do
     destination_name=$(cfg ".destinations[$destination_index].name")
     while IFS= read -r -d '' backup_id; do
+      backup_id_belongs_to_current_host "$backup_id" || continue
       validate_identifier backup_id "$backup_id"
       if ! validate_backup_bundle "$destination_index" "$backup_id"; then
         log warning "kind=bundle destination=$destination_name backup_id=$backup_id message=incomplete-or-invalid"
@@ -4282,6 +4394,7 @@ status_command() {
       destination_index=$(find_destination_index "$destination_name")
       found=false
       while IFS= read -r -d '' backup_id; do
+        backup_id_belongs_to_current_host_job "$backup_id" "$job" || continue
         validate_identifier backup_id "$backup_id"
         validate_backup_bundle "$destination_index" "$backup_id" || continue
         [[ $(destination_metadata_value "$destination_index" "$backup_id" '.job // ""') == "$job" ]] || continue
@@ -4369,6 +4482,7 @@ select_backup() {
     fi
 
     while IFS= read -r -d '' backup_id; do
+      backup_id_belongs_to_current_host_job "$backup_id" "$SELECTED_JOB" || continue
       validate_identifier backup_id "$backup_id"
       validate_backup_bundle "$destination_index" "$backup_id" || continue
       job=$(destination_metadata_value "$destination_index" "$backup_id" '.job // ""')
@@ -4513,6 +4627,7 @@ restore_pick_command() {
     [[ -z $SELECTED_DESTINATION || $destination_name == "$SELECTED_DESTINATION" ]] || continue
     destination_index=$(find_destination_index "$destination_name")
     while IFS= read -r -d '' backup_id; do
+      backup_id_belongs_to_current_host_job "$backup_id" "$job" || continue
       validate_backup_bundle "$destination_index" "$backup_id" || continue
       metadata_job=$(destination_metadata_value "$destination_index" "$backup_id" '.job // ""') || continue
       [[ $metadata_job == "$job" ]] || continue
@@ -4534,7 +4649,7 @@ restore_pick_command() {
     printf 'no completed backups for job %s\n' "$job" >&2
     return 3
   fi
-  mapfile -t records < <(printf '%s\n' "${unsorted[@]}" | sort -t '|' -k1,1nr -k2,2r -k4,4)
+  mapfile -t records < <(printf '%s\n' "${unsorted[@]+"${unsorted[@]}"}" | sort -t '|' -k1,1nr -k2,2r -k4,4)
 
   printf '%-3s %-52s %-12s %-10s %s\n' '#' 'backup_id' 'age' 'size' 'destination'
   for ((index = 0; index < ${#records[@]}; index++)); do
@@ -4743,14 +4858,14 @@ stream_selected_decrypted_payload() {
       if [[ -n $password_env ]]; then
         secret=${!password_env-}
         stream_selected_payload | gpg --batch --yes --no-tty --no-auto-key-retrieve \
-          --pinentry-mode loopback --passphrase-fd 3 --decrypt 3<<<"$secret"
+          --pinentry-mode loopback --passphrase-fd 3 --decrypt 3< <(printf '%s' "$secret")
         secret=""
       else
         identity_password_env=$(selected_metadata_value '.encryption.identity_password_env // ""') || return 3
         if [[ -n $identity_password_env ]]; then
           secret=${!identity_password_env-}
           stream_selected_payload | gpg --batch --yes --no-tty --no-auto-key-retrieve \
-            --pinentry-mode loopback --passphrase-fd 3 --decrypt 3<<<"$secret"
+            --pinentry-mode loopback --passphrase-fd 3 --decrypt 3< <(printf '%s' "$secret")
           secret=""
         else
           stream_selected_payload | gpg --batch --yes --no-tty --no-auto-key-retrieve --decrypt
@@ -5186,7 +5301,9 @@ diff_command() {
   fi
   IFS=$'\t' read -r destination_index diff_job <<<"$selection"
 
-  make_work_directory
+  if ! make_work_directory; then
+    return 3
+  fi
   manifest_one="$WORK_DIRECTORY/diff-manifest-one.json"
   manifest_two="$WORK_DIRECTORY/diff-manifest-two.json"
   index_one="$WORK_DIRECTORY/diff-index-one.tsv"
@@ -5261,7 +5378,9 @@ verify_command() {
     return 3
   fi
   if [[ $(destination_type "$BACKUP_DESTINATION_INDEX") == rclone ]]; then
-    make_work_directory
+    if ! make_work_directory; then
+      return 3
+    fi
     if ! materialize_selected_backup; then
       cleanup_work_directory
       return 3
@@ -5272,7 +5391,9 @@ verify_command() {
     return 3
   fi
   if [[ $VERIFY_MODE == full ]]; then
-    [[ -n $WORK_DIRECTORY ]] || make_work_directory
+    if [[ -z $WORK_DIRECTORY ]] && ! make_work_directory; then
+      return 3
+    fi
     if ! prepare_tar; then
       cleanup_work_directory
       return 3
@@ -5320,7 +5441,9 @@ restore_command() {
     return 3
   fi
   if [[ $(destination_type "$BACKUP_DESTINATION_INDEX") == rclone ]]; then
-    make_work_directory
+    if ! make_work_directory; then
+      return 3
+    fi
     if ! materialize_selected_backup; then
       cleanup_work_directory
       return 3
@@ -5330,7 +5453,9 @@ restore_command() {
     cleanup_work_directory
     return 3
   fi
-  [[ -n $WORK_DIRECTORY ]] || make_work_directory
+  if [[ -z $WORK_DIRECTORY ]] && ! make_work_directory; then
+    return 3
+  fi
   if ! prepare_tar; then
     cleanup_work_directory
     return 3
@@ -5674,7 +5799,9 @@ pin_command() {
   if ! acquire_lock; then
     return 3
   fi
-  make_work_directory
+  if ! make_work_directory; then
+    return 3
+  fi
 
   for ((destination_index = 0; destination_index < DESTINATION_COUNT; destination_index++)); do
     destination_name=$(cfg ".destinations[$destination_index].name")
@@ -5752,6 +5879,7 @@ cleanup_orphaned_pinned_markers() {
   local backup_id
 
   while IFS= read -r -d '' backup_id; do
+    backup_id_belongs_to_current_host "$backup_id" || continue
     [[ $backup_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || continue
     if ! destination_object_exists "$destination_index" "$backup_id.complete"; then
       remove_pinned_marker "$destination_index" "$backup_id" || return 1
@@ -5765,6 +5893,7 @@ doctor_pinned_marker_warnings() {
 
   destination_name=$(cfg ".destinations[$destination_index].name")
   while IFS= read -r -d '' backup_id; do
+    backup_id_belongs_to_current_host "$backup_id" || continue
     if [[ ! $backup_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
       log warning "kind=pin destination=$destination_name message=invalid-orphaned-marker"
     elif ! destination_object_exists "$destination_index" "$backup_id.complete"; then
@@ -5782,6 +5911,7 @@ collect_prune_records() {
   PRUNE_PINNED_RECORDS=()
 
   while IFS= read -r -d '' backup_id; do
+    backup_id_belongs_to_current_host_job "$backup_id" "$job" || continue
     validate_identifier backup_id "$backup_id"
     if ! validate_backup_bundle "$destination_index" "$backup_id"; then
       log error "kind=prune backup_id=$backup_id message=invalid-complete-bundle"
@@ -5800,10 +5930,10 @@ collect_prune_records() {
   done < <(iterate_destination_backup_ids "$destination_index")
 
   if ((${#unsorted[@]} > 0)); then
-    mapfile -t PRUNE_RECORDS < <(printf '%s\n' "${unsorted[@]}" | sort -r)
+    mapfile -t PRUNE_RECORDS < <(printf '%s\n' "${unsorted[@]+"${unsorted[@]}"}" | sort -r)
   fi
   if ((${#pinned_unsorted[@]} > 0)); then
-    mapfile -t PRUNE_PINNED_RECORDS < <(printf '%s\n' "${pinned_unsorted[@]}" | sort -r)
+    mapfile -t PRUNE_PINNED_RECORDS < <(printf '%s\n' "${pinned_unsorted[@]+"${pinned_unsorted[@]}"}" | sort -r)
   fi
 }
 
@@ -5819,14 +5949,16 @@ delete_backup_bundle() {
   fi
   case "$type" in
     local)
+      # Remove the commit marker first. An interrupted deletion can leave
+      # harmless orphan files, but never a partial bundle that looks complete.
       local_objects=(
+        "$(destination_object "$destination_index" "$backup_id.complete")"
         "$(destination_object "$destination_index" "$payload")"
         "$(destination_object "$destination_index" "$backup_id.metadata.json")"
         "$(destination_object "$destination_index" "$backup_id.sha256")"
-        "$(destination_object "$destination_index" "$backup_id.complete")"
       )
       [[ -z $signature ]] || local_objects+=("$(destination_object "$destination_index" "$signature")")
-      rm -f -- "${local_objects[@]}"
+      rm -f -- "${local_objects[@]+"${local_objects[@]}"}"
       ;;
     rclone)
       require_command rclone
@@ -5868,9 +6000,9 @@ prune_payload_size_bytes() {
 prune_job_destination() {
   local job_index=$1
   local destination_index=$2
-  local job destination destination_path destination_type_value keep_last keep_daily keep_weekly keep_monthly max_age_days
+  local job destination destination_path destination_type_value keep_last keep_daily keep_weekly keep_monthly min_keep max_age_days
   local -a records=() pinned_records=()
-  local -A keep=() seen_daily=() seen_weekly=() seen_monthly=()
+  local -A keep=() minimum_keep=() seen_daily=() seen_weekly=() seen_monthly=()
   local record created backup_id payload payload_bytes index bucket daily_count=0 weekly_count=0 monthly_count=0
   local now_seconds max_age_seconds created_seconds prune_reason
 
@@ -5885,6 +6017,7 @@ prune_job_destination() {
   keep_daily=$(cfg ".jobs[$job_index].retention.keep_daily // 0")
   keep_weekly=$(cfg ".jobs[$job_index].retention.keep_weekly // 0")
   keep_monthly=$(cfg ".jobs[$job_index].retention.keep_monthly // 0")
+  min_keep=$(cfg ".jobs[$job_index].retention.min_keep // 1")
   max_age_days=$(cfg ".jobs[$job_index].retention.max_age_days // 0")
   now_seconds=$(date -u +%s)
   max_age_seconds=$((max_age_days * 86400))
@@ -5897,14 +6030,14 @@ prune_job_destination() {
     log error "kind=prune job=$job destination=$destination message=bundle-validation-failed"
     return 3
   fi
-  records=("${PRUNE_RECORDS[@]}")
-  pinned_records=("${PRUNE_PINNED_RECORDS[@]}")
+  records=("${PRUNE_RECORDS[@]+"${PRUNE_RECORDS[@]}"}")
+  pinned_records=("${PRUNE_PINNED_RECORDS[@]+"${PRUNE_PINNED_RECORDS[@]}"}")
 
   if ((${#pinned_records[@]} > keep_last)); then
     log warning "event=prune-warning job=$job destination=$destination pinned=${#pinned_records[@]} may exceed keep_last=$keep_last"
   fi
   if [[ $DRY_RUN == true ]]; then
-    for record in "${pinned_records[@]}"; do
+    for record in "${pinned_records[@]+"${pinned_records[@]}"}"; do
       IFS='|' read -r created backup_id payload <<<"$record"
       log info "event=plan-retain job=$job destination=$destination backup_id=$backup_id reason=pinned"
     done
@@ -5916,7 +6049,14 @@ prune_job_destination() {
     keep["$backup_id"]=1
   done
 
-  for record in "${records[@]}"; do
+  # This floor is independent of GFS slots and max_age_days. It prevents a
+  # prolonged failed backup run from expiring every ordinary recovery copy.
+  for ((index = 0; index < ${#records[@]} && index < min_keep; index++)); do
+    IFS='|' read -r created backup_id payload <<<"${records[$index]}"
+    minimum_keep["$backup_id"]=1
+  done
+
+  for record in "${records[@]+"${records[@]}"}"; do
     IFS='|' read -r created backup_id payload <<<"$record"
     if ((daily_count < keep_daily)); then
       if ! bucket=$(date -u -d "$created" +'%Y-%m-%d'); then
@@ -5950,18 +6090,24 @@ prune_job_destination() {
     fi
   done
 
-  for record in "${records[@]}"; do
+  for record in "${records[@]+"${records[@]}"}"; do
     IFS='|' read -r created backup_id payload <<<"$record"
     prune_reason=''
+    if [[ -n ${minimum_keep[$backup_id]+x} ]]; then
+      if [[ $DRY_RUN == true ]]; then
+        log info "event=plan-retain job=$job destination=$destination backup_id=$backup_id reason=min-keep"
+      fi
+      continue
+    fi
     if ((max_age_days > 0)); then
       if ! created_seconds=$(date -u -d "$created" +%s); then
         log error "kind=prune job=$job destination=$destination backup_id=$backup_id message=created-at-parse-failed"
         return 3
       fi
       if ((now_seconds - created_seconds > max_age_seconds)); then
-        # max_age_days is a hard expiry for ordinary copies. It deliberately
-        # overrides the GFS keep set, while a pin remains an explicit escape
-        # hatch owned by the operator.
+        # max_age_days overrides GFS slots, but never the independent
+        # min_keep recovery floor. Pins remain the explicit longer-lived
+        # operator escape hatch.
         prune_reason=max-age
       fi
     fi
@@ -6008,10 +6154,10 @@ delete_period_job_destination() {
     log error "kind=delete-period job=$job destination=$destination message=bundle-validation-failed"
     return 3
   fi
-  records=("${PRUNE_RECORDS[@]}")
-  pinned_records=("${PRUNE_PINNED_RECORDS[@]}")
+  records=("${PRUNE_RECORDS[@]+"${PRUNE_RECORDS[@]}"}")
+  pinned_records=("${PRUNE_PINNED_RECORDS[@]+"${PRUNE_PINNED_RECORDS[@]}"}")
 
-  for record in "${pinned_records[@]}"; do
+  for record in "${pinned_records[@]+"${pinned_records[@]}"}"; do
     IFS='|' read -r _ backup_id payload <<<"$record"
     if ! backup_seconds=$(backup_id_timestamp_seconds "$backup_id" "$job"); then
       log error "kind=delete-period job=$job destination=$destination backup_id=$backup_id message=invalid-backup-timestamp"
@@ -6021,7 +6167,7 @@ delete_period_job_destination() {
     log info "event=backup-retained job=$job destination=$destination backup_id=$backup_id reason=pinned"
   done
 
-  for record in "${records[@]}"; do
+  for record in "${records[@]+"${records[@]}"}"; do
     IFS='|' read -r _ backup_id payload <<<"$record"
     if ! backup_seconds=$(backup_id_timestamp_seconds "$backup_id" "$job"); then
       log error "kind=delete-period job=$job destination=$destination backup_id=$backup_id message=invalid-backup-timestamp"
@@ -6164,6 +6310,28 @@ quick_compose_default_name() {
   printf 'quick-%s\n' "$name"
 }
 
+quick_host_component() {
+  local value=${BACKFORT_QUICK_HOST_ID:-}
+
+  if [[ -n $value ]]; then
+    validate_identifier quick.host_override "$value"
+    printf '%s\n' "$value"
+    return 0
+  fi
+
+  value=$(hostname -s 2>/dev/null || true)
+  [[ -n $value ]] || value=${HOSTNAME:-}
+  if [[ -z $value && -r /etc/hostname ]]; then
+    IFS= read -r value </etc/hostname || true
+  fi
+  value=${value//[^A-Za-z0-9._-]/-}
+  while [[ $value == [._-]* ]]; do
+    value=${value:1}
+  done
+  [[ -n $value ]] || command_error "quick-host-id-unavailable set=BACKFORT_QUICK_HOST_ID"
+  printf '%s\n' "$value"
+}
+
 quick_destination_name() {
   local position=$1
   local destination=$2
@@ -6240,17 +6408,17 @@ quick_write_config() {
   fi
   validate_absolute_path quick.state_directory "$QUICK_STATE_DIRECTORY"
   job_name=$QUICK_NAME
-  host_id="quick-$job_name"
+  host_id="quick-$(quick_host_component)-$job_name"
   validate_identifier quick.host_id "$host_id"
 
-  for path in "${QUICK_PATHS[@]}"; do
+  for path in "${QUICK_PATHS[@]+"${QUICK_PATHS[@]}"}"; do
     quick_require_single_line path "$path"
     validate_absolute_path quick.path "$path"
   done
-  for destination in "${QUICK_DESTINATIONS[@]}"; do
+  for destination in "${QUICK_DESTINATIONS[@]+"${QUICK_DESTINATIONS[@]}"}"; do
     quick_require_single_line destination "$destination"
   done
-  for exclude in "${QUICK_EXCLUDES[@]}"; do
+  for exclude in "${QUICK_EXCLUDES[@]+"${QUICK_EXCLUDES[@]}"}"; do
     quick_require_single_line exclude "$exclude"
   done
 
@@ -6294,20 +6462,20 @@ quick_write_config() {
     printf '    source:\n'
     printf '      type: files\n'
     printf '      paths:\n'
-    for path in "${QUICK_PATHS[@]}"; do
+    for path in "${QUICK_PATHS[@]+"${QUICK_PATHS[@]}"}"; do
       printf '        - %s\n' "$(yaml_quote "$path")"
     done
     if ((${#QUICK_EXCLUDES[@]} == 0)); then
       printf '      exclude: []\n'
     else
       printf '      exclude:\n'
-      for exclude in "${QUICK_EXCLUDES[@]}"; do
+      for exclude in "${QUICK_EXCLUDES[@]+"${QUICK_EXCLUDES[@]}"}"; do
         printf '        - %s\n' "$(yaml_quote "$exclude")"
       done
     fi
     printf '      follow_symlinks: %s\n' "$QUICK_FOLLOW_SYMLINKS"
     printf '    destinations:\n'
-    for destination_name in "${destination_names[@]}"; do
+    for destination_name in "${destination_names[@]+"${destination_names[@]}"}"; do
       printf '      - %s\n' "$(yaml_quote "$destination_name")"
     done
     printf '    success:\n'
@@ -6365,7 +6533,7 @@ quick_compose_write_config() {
   fi
   validate_absolute_path quick-compose.state_directory "$QUICK_COMPOSE_STATE_DIRECTORY"
   job_name=$QUICK_COMPOSE_NAME
-  host_id="quick-$job_name"
+  host_id="quick-$(quick_host_component)-$job_name"
   validate_identifier quick-compose.host_id "$host_id"
 
   if ((${#QUICK_COMPOSE_FILES[@]} == 0)); then
@@ -6379,19 +6547,19 @@ quick_compose_write_config() {
     command_error "quick-compose-volume-helper-image-without-volume"
   fi
 
-  for file in "${QUICK_COMPOSE_FILES[@]}"; do
+  for file in "${QUICK_COMPOSE_FILES[@]+"${QUICK_COMPOSE_FILES[@]}"}"; do
     quick_compose_require_single_line file "$file"
   done
-  for destination in "${QUICK_COMPOSE_DESTINATIONS[@]}"; do
+  for destination in "${QUICK_COMPOSE_DESTINATIONS[@]+"${QUICK_COMPOSE_DESTINATIONS[@]}"}"; do
     quick_compose_require_single_line destination "$destination"
   done
-  for volume in "${QUICK_COMPOSE_VOLUMES[@]}"; do
+  for volume in "${QUICK_COMPOSE_VOLUMES[@]+"${QUICK_COMPOSE_VOLUMES[@]}"}"; do
     quick_compose_require_single_line volume "$volume"
   done
-  for bind in "${QUICK_COMPOSE_BIND_MOUNTS[@]}"; do
+  for bind in "${QUICK_COMPOSE_BIND_MOUNTS[@]+"${QUICK_COMPOSE_BIND_MOUNTS[@]}"}"; do
     quick_compose_require_single_line bind "$bind"
   done
-  for database in "${QUICK_COMPOSE_DATABASES[@]}"; do
+  for database in "${QUICK_COMPOSE_DATABASES[@]+"${QUICK_COMPOSE_DATABASES[@]}"}"; do
     quick_compose_require_single_line db "$database"
   done
 
@@ -6436,19 +6604,19 @@ quick_compose_write_config() {
     printf '      type: docker_compose\n'
     printf '      project_dir: %s\n' "$(yaml_quote "$QUICK_COMPOSE_PROJECT_DIR")"
     printf '      files:\n'
-    for file in "${QUICK_COMPOSE_FILES[@]}"; do
+    for file in "${QUICK_COMPOSE_FILES[@]+"${QUICK_COMPOSE_FILES[@]}"}"; do
       printf '        - %s\n' "$(yaml_quote "$file")"
     done
     if ((${#QUICK_COMPOSE_VOLUMES[@]} > 0)); then
       printf '      volumes:\n'
-      for volume in "${QUICK_COMPOSE_VOLUMES[@]}"; do
+      for volume in "${QUICK_COMPOSE_VOLUMES[@]+"${QUICK_COMPOSE_VOLUMES[@]}"}"; do
         printf '        - %s\n' "$(yaml_quote "$volume")"
       done
       printf '      volume_helper_image: %s\n' "$(yaml_quote "$QUICK_COMPOSE_VOLUME_HELPER_IMAGE")"
     fi
     if ((${#QUICK_COMPOSE_BIND_MOUNTS[@]} > 0)); then
       printf '      bind_mounts:\n'
-      for bind in "${QUICK_COMPOSE_BIND_MOUNTS[@]}"; do
+      for bind in "${QUICK_COMPOSE_BIND_MOUNTS[@]+"${QUICK_COMPOSE_BIND_MOUNTS[@]}"}"; do
         [[ $bind == *:* ]] || command_error "quick-compose-bind-must-be-name-relative-path"
         bind_name=${bind%%:*}
         bind_path=${bind#*:}
@@ -6460,7 +6628,7 @@ quick_compose_write_config() {
     fi
     if ((${#QUICK_COMPOSE_DATABASES[@]} > 0)); then
       printf '      databases:\n'
-      for database in "${QUICK_COMPOSE_DATABASES[@]}"; do
+      for database in "${QUICK_COMPOSE_DATABASES[@]+"${QUICK_COMPOSE_DATABASES[@]}"}"; do
         IFS=:
         read -r database_name service engine user password_env database_names <<<"$database"
         [[ -n $database_name && -n $service && -n $engine && -n $user && -n $password_env && -n $database_names ]] \
@@ -6479,7 +6647,7 @@ quick_compose_write_config() {
         printf '          user: %s\n' "$(yaml_quote "$user")"
         printf '          password_env: %s\n' "$(yaml_quote "$password_env")"
         printf '          databases:\n'
-        for database_name_item in "${database_name_items[@]}"; do
+        for database_name_item in "${database_name_items[@]+"${database_name_items[@]}"}"; do
           [[ -n $database_name_item ]] \
             || command_error "quick-compose-db-must-name-at-least-one-database"
           printf '            - %s\n' "$(yaml_quote "$database_name_item")"
@@ -6488,7 +6656,7 @@ quick_compose_write_config() {
       done
     fi
     printf '    destinations:\n'
-    for destination_name in "${destination_names[@]}"; do
+    for destination_name in "${destination_names[@]+"${destination_names[@]}"}"; do
       printf '      - %s\n' "$(yaml_quote "$destination_name")"
     done
     printf '    success:\n'
@@ -6547,7 +6715,7 @@ parse_global_options() {
 }
 
 parse_command_options() {
-  set -- "${REMAINING_ARGUMENTS[@]}"
+  set -- "${REMAINING_ARGUMENTS[@]+"${REMAINING_ARGUMENTS[@]}"}"
   case "$COMMAND" in
     quick)
       while (($# > 0)); do

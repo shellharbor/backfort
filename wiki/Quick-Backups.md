@@ -60,6 +60,17 @@ sudo backfort.sh -c /root/.local/state/backfort/quick/site-before-upgrade.yaml \
   restore latest --job site-before-upgrade --to /srv/recovery/site
 ```
 
+Both quick commands generate a `host_id` from the local short hostname and
+job name. This keeps identical quick job names from separate servers isolated
+in one shared destination. If two servers intentionally have the same hostname,
+set a distinct valid component for the invocation:
+
+```bash
+sudo env BACKFORT_QUICK_HOST_ID=web-01 \
+  backfort.sh quick /srv/myapp --name before-upgrade \
+  --to rclone:cloudflare-r2:production-backups/backfort/myapp
+```
+
 ## Quick Docker Compose backup
 
 `quick-compose` creates an explicit Compose project backup. It does not guess

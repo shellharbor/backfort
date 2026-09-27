@@ -21,7 +21,9 @@ from the failed run, but remove any unrelated system secrets before sharing it.
 | `another-run-is-active` | A mutating Backfort command owns the global lock. Let it finish; do not delete lock files to force a second writer. |
 | `prometheus-textfile-directory-not-usable` | Create the configured textfile directory, make it writable by the Backfort execution account, readable by node_exporter, and ensure it is not a symlink. Run `doctor` after correcting it. |
 | `kind=metrics` warning after a run | The backup result is unchanged, but Prometheus was not updated. Restore the collector directory and permissions, then run Backfort again to publish fresh gauges. |
-| Volume snapshot fails | The Docker daemon, project, volume and trusted helper image must be available to the account that runs Backfort. |
+| `stage=preflight` failure alert or `.prom` with `exit_code 3` | A selected job could not start safely (for example a source disappeared, Docker/Compose is unavailable, or a database password variable is empty). Read the matching structured log line, repair that job, then run it again. Other selected jobs are still attempted. |
+| Missing Compose database `password_env` | Put the secret value—not a YAML literal—in the named service-account environment, credential file, or secret manager. `doctor` exits `2`; `run` records that individual job as a preflight failure without starting a dump. |
+| Volume snapshot fails | The Docker daemon, project, volume and trusted helper image must be available to the account that runs Backfort. Ensure the pinned helper contains `tar` and runs it as root; Backfort supplies only the read/search capability needed for application-owned `0700` directories. |
 | Database dump fails | Verify service name, engine, database, user and password environment variable. Ensure the necessary client is in the database container. |
 | Restore refuses a target | Restore into a new or empty explicit directory; inspect a staging restore before replacing live data. |
 

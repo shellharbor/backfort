@@ -46,7 +46,9 @@ Never place a vulnerability report or secret in a public issue.
 ## Repository automation
 
 Every push and pull request runs the Linux regression suite, ShellCheck, YAML
-example validation, and a Bash 4.3 syntax gate. A separate Documentation
+example validation, and Bash 4.3 syntax **and runtime** gates. The suite also
+covers shared-destination host isolation and a controlled temporary-workspace
+failure. A separate Documentation
 workflow checks local Markdown links across the README, Wiki sources, examples,
 and community documents, plus whitespace in changed files. CodeQL reviews
 GitHub Actions workflow definitions;
@@ -63,7 +65,11 @@ README links to the live workflow results.
   names, never passwords, API tokens, or private keys.
 - Remote publishing uses `rclone copyto`/`moveto`, never `sync`.
 - A backup is only committed after its payload, metadata, and checksum are
-  present. `.complete` is written last.
+  present. Local storage synchronizes those artifacts before `.complete`, then
+  synchronizes the commit marker; deletion removes the marker first.
+- A stable, unique `host_id` scopes automatic discovery. Hosts can share one
+  bucket/path without listing, retaining, deleting, or trusting one another's
+  backups by accident.
 - Restore always targets a new or empty directory. Backfort will not overwrite
   the original production path.
 - Retention, date-range deletion, pins, and ordinary backup creation share a

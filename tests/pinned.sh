@@ -192,20 +192,35 @@ grep -Fq "backup_id=$ORPHAN_ID message=orphaned-marker" "$TEST_DIRECTORY/doctor.
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" prune
 [[ ! -e $PRIMARY_DIRECTORY/$ORPHAN_ID.pinned ]]
 
-# max_age_days is a hard expiry for ordinary copies, even when keep_last would
-# retain them. Recreate the old unpinned fixture because the preceding ordinary
-# GFS prune is expected to remove it before this independent age-policy check.
-# Pins remain the explicit operator-controlled exception.
+# max_age_days overrides GFS retention, but the default min_keep=1 protects
+# the newest ordinary recovery copy. Recreate the old unpinned fixture because
+# the preceding ordinary GFS prune is expected to remove it before this
+# independent age-policy check. Pins remain the explicit operator-controlled
+# exception.
 write_bundle "$PRIMARY_DIRECTORY" "$MIRROR_ID" '2024-01-01T00:00:00Z'
 write_bundle "$REPLICA_DIRECTORY" "$MIRROR_ID" '2024-01-01T00:00:00Z'
 yq eval '.jobs[0].retention.keep_last = 99 | .jobs[0].retention.max_age_days = 1' -i "$CONFIG_FILE"
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" prune --dry-run \
   >"$TEST_DIRECTORY/max-age-plan.stdout" 2>"$TEST_DIRECTORY/max-age-plan.stderr"
 grep -Fq "backup_id=$MIRROR_ID reason=max-age" "$TEST_DIRECTORY/max-age-plan.stderr"
+grep -Fq "backup_id=$FIFTH_ID reason=min-keep" "$TEST_DIRECTORY/max-age-plan.stderr"
+if grep -Fq "backup_id=$FIFTH_ID reason=max-age" "$TEST_DIRECTORY/max-age-plan.stderr"; then
+  printf 'min_keep must protect the newest ordinary copy from max_age_days\n' >&2
+  exit 1
+fi
 [[ -f $PRIMARY_DIRECTORY/$MIRROR_ID.complete && -f $REPLICA_DIRECTORY/$MIRROR_ID.complete ]]
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" prune
 [[ ! -e $PRIMARY_DIRECTORY/$MIRROR_ID.complete && ! -e $REPLICA_DIRECTORY/$MIRROR_ID.complete ]]
+[[ -f $PRIMARY_DIRECTORY/$FIFTH_ID.complete ]]
 [[ -f $PRIMARY_DIRECTORY/$PINNED_ID.complete && -f $REPLICA_DIRECTORY/$PINNED_ID.complete ]]
+
+# min_keep is configurable and remains a hard floor even when the GFS count
+# is lower. Both old ordinary copies must survive the age pass.
+write_bundle "$PRIMARY_DIRECTORY" "$FOURTH_ID" '2025-01-04T00:00:00Z'
+yq eval '.jobs[0].retention.keep_last = 1 | .jobs[0].retention.min_keep = 2' -i "$CONFIG_FILE"
+"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" prune
+[[ -f $PRIMARY_DIRECTORY/$FOURTH_ID.complete ]]
+[[ -f $PRIMARY_DIRECTORY/$FIFTH_ID.complete ]]
 
 # An explicit age expiry must be a positive integer; omission keeps GFS-only
 # behavior for backwards-compatible configurations.
@@ -219,5 +234,16 @@ else
 fi
 [[ $MAX_AGE_INVALID_RESULT -eq 2 ]]
 grep -Fq 'max-age-days-must-be-positive job=pinned' "$TEST_DIRECTORY/max-age-invalid.stderr"
+
+yq eval 'del(.jobs[0].retention.max_age_days) | .jobs[0].retention.min_keep = 0' -i "$CONFIG_FILE"
+if "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" doctor \
+  >"$TEST_DIRECTORY/min-keep-invalid.stdout" 2>"$TEST_DIRECTORY/min-keep-invalid.stderr"; then
+  printf 'expected min_keep=0 to fail validation\n' >&2
+  exit 1
+else
+  MIN_KEEP_INVALID_RESULT=$?
+fi
+[[ $MIN_KEEP_INVALID_RESULT -eq 2 ]]
+grep -Fq 'min-keep-must-be-positive job=pinned' "$TEST_DIRECTORY/min-keep-invalid.stderr"
 
 printf 'Backfort pinned backup test passed.\n'

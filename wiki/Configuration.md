@@ -40,32 +40,46 @@ jobs:
     compression: {method: zstd, level: 10}
     encryption: {method: age, recipients_env: [BACKFORT_AGE_PRIMARY, BACKFORT_AGE_RECOVERY]}
     signing: {method: minisign, secret_key_env: BACKFORT_MINISIGN_SECRET_KEY, public_key_env: BACKFORT_MINISIGN_PUBLIC_KEY}
-    retention: {keep_last: 7, keep_daily: 14, keep_weekly: 8, keep_monthly: 12}
+    retention: {keep_last: 7, keep_daily: 14, keep_weekly: 8, keep_monthly: 12, min_keep: 1}
 ```
 
 ## `settings`
 
 | Key | Purpose |
 | --- | --- |
-| `host_id` | Stable identifier embedded in backup IDs and manifest metadata. |
+| `host_id` | Stable identifier embedded in backup IDs and manifest metadata; it scopes automatic discovery in a shared destination. |
 | `state_directory` | Backfort state, including notification state. Keep it root-owned. |
 | `temp_directory` | Transient working directory. It must have enough space for a bundle. |
 | `lock_file` | Shared lock for backup creation, prune, pin, unpin, and deletion. |
 | `min_free_mb` | Minimum free space required before work starts. |
+
+Choose a distinct, stable `host_id` for every server that writes to the same
+local directory, bucket, or rclone path. Automatic selectors (`list`,
+`status`, `latest`, `restore --pick`, `watchdog`, `prune`, and date-range
+`delete`) use it to see only the current server's backups. An explicit backup
+ID remains an operator-approved way to recover a copy made by another host.
 
 All filesystem paths must be absolute. Backfort rejects `/`, traversal (`..`),
 and self-referential source/destination layouts.
 
 ## Prometheus textfile metrics
 
-The optional `metrics.prometheus` block publishes the outcome of each real
-saved-job run to node_exporter's textfile collector:
+The optional `metrics.prometheus` block publishes the outcome of each
+persistent saved-job run to node_exporter's textfile collector, including a
+selected job that fails its own preflight before an archive is created:
 
 ```yaml
 metrics:
   prometheus:
     textfile_directory: /var/lib/node_exporter/textfile_collector
 ```
+
+`run` records an individual preflight failure as exit code `3` with zero
+payload/copy values, emits a `failure` event with `stage=preflight`, and
+continues the other selected jobs. `doctor` remains the strict readiness check
+and exits `2` for the same problem. If the collector directory itself is
+unusable, Backfort cannot write a metric; it stops before backup work and sends
+the preflight failure event instead.
 
 `textfile_directory` is required when `prometheus` is present. It must be an
 absolute, existing, writable directory and cannot be a symlink. Backfort does
@@ -170,7 +184,9 @@ encryption:
 ```
 
 Never add the secret value to YAML, a shell history entry, an example, or a
-repository commit.
+repository commit. Backfort supplies the value to GnuPG through a pipe-backed
+file descriptor rather than command-line arguments or a Bash here-string
+temporary file.
 
 For asymmetric GPG, import verified public keys into the keyring of the account
 that runs Backfort. Refer to one exact 40- or 64-hex primary fingerprint, or a

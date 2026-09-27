@@ -199,7 +199,10 @@ fi
 [[ $INCOMPLETE_RESULT -eq 3 ]]
 grep -Fq 'last_backup=none' "$TEST_DIRECTORY/incomplete.stderr"
 
-printf '%s\n' 'not-a-backup-id' >"$INCOMPLETE_DIRECTORY/not-a-backup-id.complete"
+# A malformed ID in this host's namespace remains diagnostic input. A foreign
+# host's malformed marker is intentionally outside this watchdog's scope.
+MALFORMED_ID='watchdog-host_watchdog_not-a-backup-id'
+printf '%s\n' "$MALFORMED_ID" >"$INCOMPLETE_DIRECTORY/$MALFORMED_ID.complete"
 if "$PROJECT_DIRECTORY/backfort.sh" -c "$INCOMPLETE_CONFIG" watchdog --max-age 1 \
   >"$TEST_DIRECTORY/malformed.stdout" 2>"$TEST_DIRECTORY/malformed.stderr"; then
   printf 'expected malformed backup ID to be ignored\n' >&2
@@ -208,7 +211,7 @@ else
   MALFORMED_RESULT=$?
 fi
 [[ $MALFORMED_RESULT -eq 3 ]]
-grep -Fq 'backup_id=not-a-backup-id parse_error=1' "$TEST_DIRECTORY/malformed.stderr"
+grep -Fq "backup_id=$MALFORMED_ID parse_error=1" "$TEST_DIRECTORY/malformed.stderr"
 
 BAD_CONFIG="$TEST_DIRECTORY/bad-watchdog.yaml"
 cp "$CONFIG_FILE" "$BAD_CONFIG"

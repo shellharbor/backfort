@@ -126,6 +126,7 @@ EOF
 [[ -f "$RESTORE_DIRECTORY/compose/compose.yaml" ]]
 diff "$COMPOSE_DIRECTORY/uploads/asset.txt" "$RESTORE_DIRECTORY/bind-mounts/uploads/asset.txt"
 tar --extract --to-stdout --file "$RESTORE_DIRECTORY/volumes/media/data.tar" ./volume.txt | grep -q 'volume content'
+grep -q 'volume-snapshot fake_media capability=DAC_READ_SEARCH' "$BACKFORT_FAKE_DOCKER_LOG"
 grep -q 'postgres custom dump' "$RESTORE_DIRECTORY/databases/postgres/crm.dump"
 grep -q 'postgres globals' "$RESTORE_DIRECTORY/databases/postgres/globals.sql"
 grep -q 'mysql logical dump' "$RESTORE_DIRECTORY/databases/mysql/crm.sql"

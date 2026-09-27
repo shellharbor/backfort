@@ -21,13 +21,16 @@ STATE_DIRECTORY="$TEST_DIRECTORY/state"
 TEMP_DIRECTORY="$TEST_DIRECTORY/temp"
 RESTORE_DIRECTORY="$TEST_DIRECTORY/restore"
 CONFIG_FILE="$TEST_DIRECTORY/config.yaml"
+SYMMETRIC_BACKUP_DIRECTORY="$TEST_DIRECTORY/symmetric-backups"
+SYMMETRIC_RESTORE_DIRECTORY="$TEST_DIRECTORY/symmetric-restore"
+SYMMETRIC_CONFIG_FILE="$TEST_DIRECTORY/symmetric-config.yaml"
 WRITER_GNUPGHOME="$TEST_DIRECTORY/writer-gnupg"
 RECOVERY_GNUPGHOME="$TEST_DIRECTORY/recovery-gnupg"
 PUBLIC_KEY_FILE="$TEST_DIRECTORY/recovery-public.asc"
 PASSPHRASE='backfort-test-private-key-passphrase'
 
 mkdir -p "$SOURCE_DIRECTORY" "$BACKUP_DIRECTORY" "$STATE_DIRECTORY" "$TEMP_DIRECTORY" \
-  "$WRITER_GNUPGHOME" "$RECOVERY_GNUPGHOME"
+  "$SYMMETRIC_BACKUP_DIRECTORY" "$WRITER_GNUPGHOME" "$RECOVERY_GNUPGHOME"
 chmod 0700 "$WRITER_GNUPGHOME" "$RECOVERY_GNUPGHOME"
 printf 'real asymmetric gpg content\n' >"$SOURCE_DIRECTORY/important.txt"
 
@@ -102,6 +105,50 @@ export BACKFORT_GPG_IDENTITY_PASSWORD="$PASSPHRASE"
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" verify latest --job gpg-integration --full
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" restore latest --job gpg-integration --to "$RESTORE_DIRECTORY"
 diff -r "$SOURCE_DIRECTORY" "$RESTORE_DIRECTORY$SOURCE_DIRECTORY"
+
+# Symmetric GPG uses the same pipe-backed passphrase path. This exercises real
+# GnuPG encryption, full verification, and restore instead of only a fake
+# command adapter.
+export BACKFORT_GPG_PASSWORD="$PASSPHRASE"
+cat >"$SYMMETRIC_CONFIG_FILE" <<EOF
+version: 1
+settings:
+  host_id: gpg-symmetric-integration-host
+  state_directory: "$STATE_DIRECTORY"
+  temp_directory: "$TEMP_DIRECTORY"
+  lock_file: "$TEST_DIRECTORY/symmetric-backfort.lock"
+  min_free_mb: 1
+destinations:
+  - name: local
+    type: local
+    path: "$SYMMETRIC_BACKUP_DIRECTORY"
+jobs:
+  - name: gpg-symmetric-integration
+    source:
+      type: files
+      paths: ["$SOURCE_DIRECTORY"]
+      exclude: []
+      follow_symlinks: false
+    destinations: [local]
+    success: {min_copies: 1}
+    compression: {method: gzip, level: 6}
+    encryption:
+      method: gpg
+      password_env: BACKFORT_GPG_PASSWORD
+    retention: {keep_last: 1, keep_daily: 0, keep_weekly: 0, keep_monthly: 0}
+EOF
+
+"$PROJECT_DIRECTORY/backfort.sh" -c "$SYMMETRIC_CONFIG_FILE" doctor
+"$PROJECT_DIRECTORY/backfort.sh" -c "$SYMMETRIC_CONFIG_FILE" run
+"$PROJECT_DIRECTORY/backfort.sh" -c "$SYMMETRIC_CONFIG_FILE" verify latest --job gpg-symmetric-integration --full
+"$PROJECT_DIRECTORY/backfort.sh" -c "$SYMMETRIC_CONFIG_FILE" restore latest --job gpg-symmetric-integration --to "$SYMMETRIC_RESTORE_DIRECTORY"
+diff -r "$SOURCE_DIRECTORY" "$SYMMETRIC_RESTORE_DIRECTORY$SOURCE_DIRECTORY"
+unset BACKFORT_GPG_PASSWORD
+
+if grep -Fq '3<<<' "$PROJECT_DIRECTORY/backfort.sh"; then
+  printf 'GPG passphrases must not use a Bash here-string\n' >&2
+  exit 1
+fi
 
 export GNUPGHOME="$WRITER_GNUPGHOME"
 export BACKFORT_GPG_RECIPIENT="$RECIPIENT_SUBKEY_FINGERPRINT"

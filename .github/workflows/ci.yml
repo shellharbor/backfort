@@ -49,6 +49,14 @@ jobs:
             bash:4.3.48 \
             bash -c '[[ "$BASH_VERSION" == 4.3.* ]] && bash -n backfort.sh tests/*.sh'
 
+      - name: Run Bash 4.3 runtime regression test
+        run: |
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --workdir /workspace \
+            bash:4.3.48 \
+            bash tests/bash43-runtime.sh
+
       - name: Validate example YAML
         run: |
           for file in examples/*.yaml; do
@@ -60,6 +68,15 @@ jobs:
 
       - name: Run smoke test
         run: bash tests/smoke.sh
+
+      - name: Run shared-destination host scope test
+        run: bash tests/host-scope.sh
+
+      - name: Run workspace failure test
+        run: bash tests/workspace-failure.sh
+
+      - name: Run local durability test
+        run: bash tests/local-durability.sh
 
       - name: Run per-file hash test
         run: bash tests/file-hashes.sh
@@ -105,3 +122,6 @@ jobs:
 
       - name: Run Prometheus metrics test
         run: bash tests/metrics.sh
+
+      - name: Run preflight failure observability test
+        run: bash tests/preflight-failure.sh

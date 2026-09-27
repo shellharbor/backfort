@@ -143,6 +143,10 @@ jobs:
       keep_daily: 7
       keep_weekly: 4
       keep_monthly: 6
-      # Optional hard expiry for unpinned copies. It overrides GFS retention.
+      # Safety floor for ordinary completed copies. Defaults to 1 and is never
+      # removed by either GFS rotation or max_age_days.
+      min_keep: 1
+      # Optional expiry for unpinned copies after this many full days. It
+      # overrides GFS retention but never removes the min_keep safety floor.
       # max_age_days: 90
 

@@ -30,9 +30,17 @@ product sources:
 
 ## Preserve the recovery contract
 
-- A backup copy is recoverable only after its `.complete` marker is published.
-  The payload, metadata and checksum must be ready first; optional Minisign
-  signatures and `.pinned` markers have their documented roles.
+- A local backup copy is recoverable only after its payload, metadata, checksum
+  and optional Minisign signature are synchronized, then its `.complete`
+  marker and destination directory are synchronized. Local and rclone removal
+  must remove `.complete` first; harmless orphan objects are preferable to a
+  partial bundle that appears recoverable. `.pinned` markers retain their
+  documented role.
+- Treat `settings.host_id` as the boundary for every automatic discovery path.
+  `list`, `status`, `latest`, `restore --pick`, `watchdog`, `prune`, and
+  date-range `delete` must ignore another host's IDs before validating or
+  deleting them. A full explicit ID may support a deliberate cross-host
+  recovery, but must not weaken automated isolation.
 - Never make `list`, `status`, `verify`, `restore`, `prune`, `delete`, `diff`,
   or `watchdog` treat an incomplete or malformed bundle as valid.
 - New manifests record a SHA-256 value for every regular archive file. Keep
@@ -44,12 +52,19 @@ product sources:
 - `success.min_copies` determines success across independent destinations. A
   partial copy result is distinct from a failed copy policy and must retain its
   documented exit code.
-- Retention, pins and date-range deletion protect completed bundles. Pinned
-  copies remain outside GFS retention and `max_age_days`; deletion needs its
-  existing explicit dry-run/confirmation safety boundary.
+- Retention, pins and date-range deletion protect completed bundles.
+  `retention.min_keep` defaults to one and protects the newest ordinary copies
+  from both GFS rotation and `max_age_days`. Pinned copies remain outside GFS
+  retention and age expiry; deletion needs its existing explicit
+  dry-run/confirmation safety boundary.
 - Docker Compose backups are explicit. Never infer files, volumes, bind mounts
   or database services from an image or a Compose file. Database volumes do not
   replace logical engine dumps.
+- Compose volume helpers remain networkless with a read-only root filesystem
+  and source mount. Keep the capability set minimal: `DAC_READ_SEARCH` is the
+  only added capability, so app-owned `0700` data can be read without granting
+  write or broader privilege. Do not use an unguarded `mktemp`: a workspace
+  creation failure must stop the command before any later path is formed.
 - `restore-compose` is staged by default. Its optional database import requires
   an explicit target project and both `--apply --confirm`; it must not deploy
   project files, create or restore volumes, start services, apply PostgreSQL
@@ -65,6 +80,9 @@ product sources:
   keys; private keys and any `identity_password_env` value remain on a separate
   recovery host. Do not weaken the no-auto-retrieve or exact-fingerprint
   recipient boundary.
+- Symmetric GPG and passphrase-protected recovery keys pass their secret through
+  a pipe-backed file descriptor. Do not reintroduce a Bash here-string, which
+  may materialize the secret in a temporary file on older Bash versions.
 - Validate paths, identifiers, YAML keys, dates, destination names and template
   placeholders at the boundary. Preserve the existing strict unknown-key checks.
 - Do not use `eval`, template-driven shell execution, or user-controlled
@@ -78,6 +96,12 @@ product sources:
   partial deletion from appearing recoverable.
 - Notification delivery is non-fatal. Preserve redaction, bounded rendering,
   per-channel antiflood behavior and the fixed template placeholder whitelist.
+- A persistent `run` isolates each selected job's preflight. A preflight error
+  must become that job's code-3 result with `stage=preflight`, zero-valued
+  Prometheus copy/payload gauges, and the standard failure event while other
+  selected jobs continue. Keep `doctor` strict with its code-2 validation
+  semantics. If the Prometheus collector itself is unusable, it cannot receive
+  a metric: do not start backup work, but send the preflight failure event.
 
 ## Implement by surface
 
@@ -88,7 +112,7 @@ product sources:
 | Prometheus metrics | schema and readiness validation, atomic textfile writer, `tests/metrics.sh`, README, `Configuration`, `Monitoring and Metrics`, and troubleshooting Wiki pages |
 | Lifecycle hook | validator and preflight, hook execution and signal cleanup, `tests/hooks.sh`, README, `Configuration`, and `Automation-and-Notifications` Wiki pages |
 | GitHub automation or badge | `.github/workflows/`, `.github/dependabot.yml`, README badges, `CHANGELOG.md`, and Wiki maintainer guidance; never add a badge without its real workflow or public service |
-| Local/rclone bundle behavior | atomic publish, list/verify/restore/prune/delete behavior, smoke tests, recovery and storage docs |
+| Local/rclone bundle behavior | atomic publish, host-scoped automatic discovery, list/verify/restore/prune/delete behavior, smoke tests, recovery and storage docs |
 | Compose or database adapter | Compose validation, fake Docker test, recovery instructions, `Docker-Compose-and-Databases`, `Compose-Migration`, and `Restore-and-Verification` Wiki pages |
 | Security, encryption, signing or notifications | validation, negative tests, redaction/log review, README and relevant Wiki safety/automation pages |
 | GitHub community or disclosure policy | `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, README links, and this skill when routing changes |
@@ -96,7 +120,9 @@ product sources:
 Use `quick` and `quick-compose` as temporary, non-secret configuration
 generators. Their persisted recovery configs belong below the protected state
 directory and must remain compatible with ordinary `list`, `verify`, `restore`
-and `prune` commands.
+and `prune` commands. Their generated host IDs must distinguish writers in a
+shared destination: retain the hostname component and the documented
+`BACKFORT_QUICK_HOST_ID` override.
 
 ## Verify proportionately
 
@@ -112,13 +138,16 @@ bash tests/smoke.sh
 Run the specialized test when its surface changes: `quick.sh`,
 `rclone-smoke.sh`, `compose-smoke.sh`, `restore-compose.sh`,
 `crypto-smoke.sh`, `gpg-asymmetric.sh`, `file-hashes.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
-`delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, or `metrics.sh`.
+`delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, `metrics.sh`,
+`preflight-failure.sh`, `host-scope.sh`, `workspace-failure.sh`, or
+`bash43-runtime.sh`, or `local-durability.sh`.
 For release stabilization, also verify direct execution from a clean Linux
 checkout: `backfort.sh` and executable test adapters must retain mode `0755`.
 CI provides Mike Farah `yq` v4, GnuPG, ShellCheck and Python on Ubuntu;
 generated JSON filters must use syntax supported by that version. If a local
 dependency is unavailable, do not install it without authorization; report the
-exact skipped check and residual risk. CI also checks Bash 4.3 parsing; CodeQL and OpenSSF
+exact skipped check and residual risk. CI also executes a Bash 4.3 runtime
+regression, not just parsing; CodeQL and OpenSSF
 Scorecard scan the GitHub automation, while the release metadata workflow
 requires a `vX.Y.Z` tag to match a non-development CLI version and Changelog
 heading.

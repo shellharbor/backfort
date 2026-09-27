@@ -21,12 +21,15 @@ configuration is YAML and the executable is `backfort.sh`.
 - `quick PATH ... --to DESTINATION` makes an immediate file or directory
   backup without a saved YAML job. It supports tar excludes, optional symlink
   following, local/rclone copies, and a non-secret recovery config saved under
-  the protected state directory.
+  the protected state directory. Its generated host ID combines the local
+  hostname and job; `BACKFORT_QUICK_HOST_ID` is the non-secret override when
+  hosts intentionally share a hostname.
 - `quick-compose` makes a one-off explicit Compose project backup without a
   saved YAML job. It accepts local and rclone destinations, selected volumes
   and bind mounts, plus PostgreSQL/MySQL/MariaDB SQL dumps. It saves a
   non-secret recovery configuration under the protected state directory and
-  reuses the normal atomic publication pipeline. A server-to-server migration
+  reuses the normal atomic publication pipeline and the same host-isolated
+  quick ID. A server-to-server migration
   uses this as the verified source-side snapshot and a deliberate staged target
   restore; Backfort does not automatically connect to, deploy on, or cut over
   a target server.
@@ -37,8 +40,15 @@ configuration is YAML and the executable is `backfort.sh`.
   files and running database services. It does not copy project files, restore
   volumes, start services, apply PostgreSQL global roles, or automate MS SQL
   and Oracle recovery.
-- Atomic publication: a backup copy is usable only after its `.complete`
-  marker is published.
+- Atomic local publication: a backup copy is usable only after its payload,
+  metadata, checksum and optional signature are synchronized, then its
+  `.complete` marker and destination directory are synchronized. Local and
+  rclone deletion remove that marker first, so an interruption leaves no
+  partial bundle that looks recoverable.
+- `settings.host_id` is a shared-destination isolation boundary. Automatic
+  list/status/latest/pick/watchdog/retention/delete discovery sees only the
+  configured host's IDs, while an explicit full ID remains available for a
+  deliberate reviewed cross-host recovery.
 - A completed bundle has payload, metadata, checksum and `.complete`; optional
   `.minisig` authenticates the payload and optional `.pinned` stores a pin UTC
   timestamp plus a non-secret reason.
@@ -54,8 +64,10 @@ configuration is YAML and the executable is `backfort.sh`.
 - `pin` and `unpin` manage an optional per-destination `.pinned` marker for a
   completed backup. Pinned copies are outside GFS rotation and `max_age_days`
   expiry, never consume retention slots, and have an operator-managed storage
-  lifetime. Unpinned copies may use positive `retention.max_age_days` as a
-  hard expiry that overrides the ordinary GFS keep set during `prune`.
+  lifetime. `retention.min_keep` defaults to one and protects that many newest
+  ordinary completed copies from both GFS rotation and positive
+  `retention.max_age_days`. Older unpinned copies may use that age limit, which
+  overrides the ordinary GFS keep set only above the recovery floor.
 - `delete --job NAME --since YYYY-MM-DD --until YYYY-MM-DD` removes complete,
   unpinned backup copies in one inclusive UTC date range. It requires either
   `--dry-run` or explicit `--confirm`; without `--from DESTINATION` it applies
@@ -64,16 +76,26 @@ configuration is YAML and the executable is `backfort.sh`.
   completed backup version. It resolves an ID and destination before entering
   the ordinary restore path; non-TTY calls fail instead of waiting for input.
 - `watchdog` is a read-only dead man's switch. It finds the newest valid copy
-  for each selected job using the UTC timestamp in the backup ID and returns
-  exit code `3` when a job is stale or has no completed backup.
+  for each selected job and configured host using the UTC timestamp in the
+  backup ID and returns exit code `3` when a job is stale or has no completed
+  backup.
+- Compose volume snapshots keep their networkless, read-only helper boundary
+  and grant only `DAC_READ_SEARCH`, allowing the helper to archive
+  application-owned `0700` data without broader capabilities. A failure to
+  create Backfort's temporary workspace is an explicit operational failure;
+  no later path may be constructed from an empty workspace.
 - Optional notifications use one internal event contract for Telegram, ntfy,
   webhooks, and a local sendmail-compatible SMTP transport. Events include
   backup result transitions, watchdog failures, restore result, and completed
   prune activity. Delivery failures only warn and never change command exits.
 - Optional Prometheus node_exporter textfile metrics are atomically replaced
-  after each non-dry-run saved job. The per-job gauges carry only stable host
-  and job labels plus numeric run, duration, payload-size, and copy-count
-  state; metrics write failures warn without changing a backup result.
+  after each non-dry-run saved job, including an individual job that fails
+  preflight. A preflight result is code `3` with zero payload/copy gauges and a
+  `stage=preflight` failure event; other selected jobs continue. The per-job
+  gauges carry only stable host and job labels plus numeric run, duration,
+  payload-size, and copy-count state; metrics write failures warn without
+  changing a backup result. An unusable collector cannot receive a metric, so
+  `run` stops before backup work and sends the preflight notification instead.
 - Per-job notification state records `ok` or `bad` atomically. Recovery is a
   transition from bad to successful; failure, partial, and watchdog alerts use
   per-channel antiflood state. An opt-in daily digest is stored under the
@@ -93,7 +115,9 @@ configuration is YAML and the executable is `backfort.sh`.
 - Logs are structured `key=value` records. Do not put credentials or private
   key material into configuration, test fixtures, or log output. GPG public
   recipient fingerprints are not secrets, but private keys and their
-  passphrases never belong on a backup writer.
+  passphrases never belong on a backup writer. When a symmetric or recovery
+  passphrase is needed, it reaches GnuPG via a pipe-backed descriptor rather
+  than command-line arguments or a shell-created temporary file.
 
 ## Verification
 
@@ -103,12 +127,22 @@ verification rejects a changed archived file even after its outer checksum is
 rewritten, and legacy manifests remain verifiable.
 `tests/metrics.sh` covers the Prometheus output contract, partial results,
 strict schema validation, `doctor` readiness, and a non-fatal post-run metrics
-write failure.
+write failure. `tests/preflight-failure.sh` proves that a missing file source
+and unset Compose database password variable produce per-job preflight metrics
+and notifications while a healthy job continues; it also verifies the
+collector-unavailable notification path and strict `doctor` exit behavior.
 `tests/gpg-asymmetric.sh` creates temporary GnuPG keyrings to prove that a
 writer with only a recipient public key can create a backup recovered by the
 separate private keyring.
+`tests/host-scope.sh` proves that a shared destination cannot cross-contaminate
+automatic selection, watchdog, retention, or date-range deletion. `tests/
+bash43-runtime.sh` executes empty-array paths under Bash 4.3, and `tests/
+workspace-failure.sh` proves a temporary-directory failure stops before
+packaging. `tests/local-durability.sh` proves that local artifact data is
+synchronized before publication of `.complete`, a failed synchronization
+publishes no completed bundle, and deletion removes `.complete` first.
 GitHub Actions runs the full test set on Ubuntu with Mike Farah yq v4 and a
-Bash 4.3 syntax gate. CodeQL scans workflow definitions; OpenSSF Scorecard
+Bash 4.3 syntax and runtime gate. CodeQL scans workflow definitions; OpenSSF Scorecard
 publishes supply-chain findings; a `v*` tag must match the release-ready CLI
 version and Changelog heading; a Documentation workflow checks local Markdown
 links and whitespace; Dependabot proposes grouped weekly GitHub Actions

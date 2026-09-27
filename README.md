@@ -84,7 +84,7 @@ same local and rclone destinations as a file backup.
   Object Storage, Cloudflare R2, FTP/FTPS, Dropbox, Yandex Disk, pCloud and
   other rclone-supported remotes
 - Explicit `min_copies` policy for a successful backup
-- Atomic publication using a final `.complete` marker
+- Durable local publication: data is synchronized before the final `.complete` marker
 - Fast payload checksum verification plus full per-file SHA-256 verification
 - Safe restore into a new or empty directory
 - Opt-in interactive restore version selection for a manual terminal session
@@ -300,6 +300,13 @@ direct source or destination and rejects a destination, state directory, or
 temporary directory located inside a configured source directory. This avoids
 self-referential backups that grow while they are being created.
 
+`host_id` is also the isolation boundary for automatic discovery. Give every
+server that writes to the same local directory, bucket, or rclone path a stable
+**different** value. `list`, `status`, `verify latest`, `restore latest`,
+`restore --pick`, `watchdog`, `prune`, and date-range `delete` consider only
+IDs made by the configured host. A fully specified backup ID remains available
+for a deliberate cross-host recovery after the operator has reviewed it.
+
 ### Lifecycle hooks: safely quiesce an application
 
 Some applications need a short, deliberate pause before their files are read:
@@ -394,6 +401,17 @@ On a real run, the non-secret job is saved as
 Use `--state-directory DIRECTORY` to select another protected location, then
 reuse the saved file for `list`, `verify`, `restore`, or `prune`.
 
+Quick backups derive their generated `host_id` from the local short hostname
+and job name, so the same quick name on separate servers does not collide in a
+shared destination. If hosts deliberately share a hostname, set a distinct
+valid identifier explicitly:
+
+```bash
+sudo env BACKFORT_QUICK_HOST_ID=web-01 \
+  /opt/backfort/backfort.sh quick /srv/app --name before-upgrade \
+  --to rclone:cloudflare-r2:production-backups/backfort/app
+```
+
 ### Docker Compose sources
 
 A `docker_compose` source is explicit by design. Backfort copies only the
@@ -432,6 +450,10 @@ source:
 Docker volume name. Before a run, `doctor` verifies the Compose configuration,
 selected services, selected volumes and the helper image. The helper runs with
 no network, a read-only root filesystem and a read-only source-volume mount.
+Backfort drops every Linux capability, then adds only `DAC_READ_SEARCH` so a
+trusted helper can archive application-owned `0700` directories. Choose a
+pinned image that includes `tar` and runs that command as root; the only
+writable mount is the temporary archive target.
 
 The `password_env` value is the **name** of a host environment variable, not a
 password. Backfort passes its value into the target container using the engine's
@@ -601,9 +623,10 @@ intentional.
 ### Prometheus metrics
 
 Backfort can expose the result of each saved job through the Prometheus
-node_exporter textfile collector. It still runs no daemon: after a real `run`,
-Backfort atomically replaces one `backfort_<job>.prom` file in the configured
-directory. `--dry-run run`, `quick`, `quick-compose`, restore, prune, and
+node_exporter textfile collector. It still runs no daemon: after a persistent
+`run`, Backfort atomically replaces one `backfort_<job>.prom` file for every
+selected job, including one that fails its own preflight before an archive is
+created. `--dry-run run`, `quick`, `quick-compose`, restore, prune, and
 watchdog do not create metrics files.
 
 ```yaml
@@ -618,6 +641,15 @@ existing, writable, non-symlink directory. If it becomes unavailable after a
 backup begins, Backfort logs a `kind=metrics` warning and preserves the backup
 command's real exit code; monitoring output must not invalidate a recoverable
 copy.
+
+If a job's preflight fails—for example a source vanished, Docker Compose is
+unavailable, or a database `password_env` is unset—`run` records that job with
+exit code `3`, zero payload/copy values, and `duration=0`. It also emits the
+ordinary failure notification with `stage=preflight`, then continues with the
+other selected jobs. `doctor` remains strict and stops with code `2` so you can
+repair a configuration before the scheduled window. If the **collector
+directory itself** fails preflight, no metric can safely be written; Backfort
+does not start any selected job and sends a failure notification instead.
 
 Every file contains the following gauges, labelled only with the stable
 `host` and `job` identifiers:
@@ -681,6 +713,12 @@ after the initial success, Backfort records per-job status and sends `recovery`
 instead only when a job previously failed or was partial. `failure`, `partial`,
 and `watchdog` are limited per channel and job by `antiflood_hours`; a suppressed
 send is reported as `notify_suppressed` on stderr.
+
+`run` uses the same `failure` event when a selected job cannot pass preflight.
+Its event has `stage=preflight`, no backup ID, and a redacted generic error; the
+structured log carries the exact safe diagnostic. This distinguishes a failed
+precondition from a failed archive or publish, while keeping the alert contract
+uniform across Telegram, ntfy, webhooks, and SMTP.
 
 Set `defaults.digest: daily` to collect `success` and `prune` activity in the
 state directory. The first later Backfort event flushes the prior day's digest,
@@ -797,8 +835,9 @@ encryption:
   password_env: BACKFORT_GPG_PASSWORD
 ```
 
-Backfort passes the password through a dedicated file descriptor rather than
-as a command-line argument. It configures GPG with iterated SHA-512 S2K at the
+Backfort passes the password through a pipe-backed dedicated file descriptor,
+not a command-line argument or Bash here-string temporary file. It configures
+GPG with iterated SHA-512 S2K at the
 maximum OpenPGP count supported by GnuPG.
 
 For asymmetric GPG, the backup server imports **only public keys** and encrypts
@@ -899,8 +938,16 @@ directories and links deliberately do not have a file-content hash. Source
 data is stored below `data/`. A Compose restore contains `compose/`,
 `volumes/<logical-name>/data.tar`, `bind-mounts/<name>/` and
 `databases/<database-name>/` below that root. Backfort writes every destination
-file through a temporary name and publishes `.complete` last. `list`, `status`,
+file through a temporary name and publishes `.complete` last. For a local
+destination it synchronizes the payload, metadata, checksum and optional
+signature before that marker, then synchronizes the marker and destination
+directory. Removal uses the reverse safety boundary: `.complete` is removed
+first, so an interrupted local or remote deletion can leave only harmless
+orphan files, never a partial bundle presented as recoverable. `list`, `status`,
 `watchdog`, `diff`, `verify`, `restore`, and `prune` ignore bundles without this marker.
+Automatic lookup is host-scoped: a shared destination can hold several hosts'
+copies of one job without one server listing, restoring, retaining, or judging
+another server's copies as its own.
 
 ## Verification
 
@@ -1028,7 +1075,8 @@ retention:
   keep_daily: 7
   keep_weekly: 4
   keep_monthly: 6
-  max_age_days: 90  # optional hard expiry for unpinned copies
+  min_keep: 1       # recovery floor; this many newest ordinary copies survive
+  max_age_days: 90  # optional expiry for older unpinned copies
 ```
 
 The retained set is the union of:
@@ -1038,15 +1086,21 @@ The retained set is the union of:
 - the newest backup from each of the latest N represented ISO weeks;
 - the newest backup from each of the latest N represented UTC months.
 
+`min_keep` is a positive safety floor and defaults to `1`. The newest N
+ordinary (unpinned) completed copies are never removed by GFS rotation or
+`max_age_days`; set it higher when the recovery policy requires several
+independent rollback points.
+
 `max_age_days` is optional. When set to a positive integer, an unpinned copy
 older than that many full 24-hour periods is deleted by `prune` even if the
-GFS rules above would otherwise retain it. This is useful for a clear storage
-ceiling such as “never keep ordinary backups past 90 days.” Pinned copies are
-explicit recovery points and remain outside both GFS and this age expiry; unpin
-them when their longer lifetime is no longer wanted.
+GFS rules above would otherwise retain it, except for the `min_keep` floor.
+This is useful for a clear storage ceiling without allowing a prolonged backup
+failure to erase the last recovery copy. Pinned copies are explicit recovery
+points and remain outside both GFS and this age expiry; unpin them when their
+longer lifetime is no longer wanted.
 
-`keep_last` must be at least one. Preview every deletion before enabling a
-scheduled prune:
+`keep_last` and `min_keep` must each be at least one. Preview every deletion
+before enabling a scheduled prune:
 
 ```bash
 backfort.sh -c /etc/backfort/config.yaml prune --dry-run
@@ -1056,8 +1110,10 @@ backfort.sh -c /etc/backfort/config.yaml prune
 Pruning is deliberately separate from `run`. This permits a
 different systemd service and a separately scoped rclone credential profile.
 
-If any bundle carrying a `.complete` marker is malformed, pruning stops for
-that destination instead of guessing which files are safe to remove.
+If a bundle for the current `host_id` carrying a `.complete` marker is
+malformed, pruning stops for that destination instead of guessing which files
+are safe to remove. Completed objects whose IDs belong to another host are
+outside this host's retention scope and are skipped before validation.
 
 ### Pinned backups
 
@@ -1175,7 +1231,8 @@ CRON_TZ=UTC
 ```
 
 Run pruning separately, preferably after reviewing its dry-run output. A daily
-schedule is recommended when `max_age_days` sets a hard expiry:
+schedule is recommended when `max_age_days` sets an expiry above the
+`min_keep` recovery floor:
 
 ```cron
 45 3 * * * /opt/backfort/backfort.sh -c /etc/backfort/config.yaml prune
@@ -1203,11 +1260,12 @@ that default list with exactly one configured job. `--max-age HOURS` (integer
 from 1 through 8760) overrides `watchdog.max_age_hours`; one of them is
 required.
 
-The newest valid, completed copy across each job's destinations is selected by
-the UTC timestamp embedded in its backup ID—not by filesystem mtime. An
-incomplete or malformed bundle is ignored. Fresh jobs print a machine-readable
-line to stdout and return `0`; every stale job is reported on stderr and the
-command returns `3`. A missing completed bundle is reported as
+The newest valid, completed copy for the configured `host_id` across each
+job's destinations is selected by the UTC timestamp embedded in its backup
+ID—not by filesystem mtime. An incomplete or malformed bundle is ignored.
+Fresh jobs print a machine-readable line to stdout and return `0`; every stale
+job is reported on stderr and the command returns `3`. A missing completed
+bundle is reported as
 `last_backup=none`.
 
 For example, check every 15 minutes and invoke your usual notification wrapper
@@ -1225,7 +1283,10 @@ and content comparison:
 
 ```bash
 bash -n backfort.sh tests/*.sh
+bash tests/bash43-runtime.sh
+bash tests/workspace-failure.sh
 bash tests/smoke.sh
+bash tests/host-scope.sh
 bash tests/file-hashes.sh
 bash tests/quick.sh
 bash tests/rclone-smoke.sh
@@ -1241,6 +1302,7 @@ bash tests/pick.sh
 bash tests/notify.sh
 bash tests/hooks.sh
 bash tests/metrics.sh
+bash tests/preflight-failure.sh
 ```
 
 Run ShellCheck when it is available:
@@ -1255,7 +1317,7 @@ Backfort's badges point to checks that are actually tracked in the repository:
 
 | Guardrail | What it protects |
 | --- | --- |
-| [CI](.github/workflows/ci.yml) | Bash syntax, Bash 4.3 parsing, ShellCheck, YAML examples, and the hermetic regression suite. |
+| [CI](.github/workflows/ci.yml) | Bash syntax and runtime on Bash 4.3, ShellCheck, YAML examples, host-scope and workspace-failure regressions, plus the hermetic suite. |
 | [Documentation](.github/workflows/documentation.yml) | Internal Markdown links across the README, Wiki sources, examples, and community documents, plus whitespace in changed files. |
 | [CodeQL](.github/workflows/codeql.yml) | GitHub Actions workflow analysis on pull requests, `main`, and a weekly schedule. |
 | [OpenSSF Scorecard](.github/workflows/scorecard.yml) | A weekly supply-chain review published to GitHub code scanning. |

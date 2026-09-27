@@ -16,6 +16,11 @@ backfort.sh -c /etc/backfort/config.yaml restore --pick --job web --to /srv/reco
 interactively. Use it from a terminal; it intentionally refuses to guess when
 standard input is not interactive.
 
+These automatic listings and `latest` selectors are scoped to the configured
+`settings.host_id`. That makes one shared bucket safe for multiple servers
+using the same job name. To recover a reviewed copy from another host, pass
+its full backup ID explicitly.
+
 ## Verify before an incident
 
 Run a quick check after every important backup and schedule deeper checks for
@@ -136,7 +141,9 @@ recovery host. Before a full verification or restore, import that private key
 there and use the same Backfort configuration that created the copy. If the
 private key has a passphrase, provide the value through the configured
 `identity_password_env` using your secret manager, or unlock it with the local
-GnuPG agent first. Never move the private key or its passphrase to the backup
+GnuPG agent first. Backfort passes that value to GnuPG through a pipe-backed
+file descriptor rather than a command-line argument or Bash here-string
+temporary file. Never move the private key or its passphrase to the backup
 writer.
 
 `doctor` on the writer verifies that every configured public recipient is an

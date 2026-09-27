@@ -32,6 +32,7 @@ case "${1:-}" in
     shift
     source_volume=""
     backup_directory=""
+    capability=""
     while (($# > 0)); do
       case "$1" in
         -v)
@@ -42,7 +43,10 @@ case "${1:-}" in
             *:/backup:rw) backup_directory=${mount%:/backup:rw} ;;
           esac
           ;;
-        --cap-drop|--network)
+        --cap-drop|--cap-add|--network)
+          if [[ $1 == --cap-add ]]; then
+            capability=$2
+          fi
           shift 2
           ;;
         --rm|--pull=never|--read-only)
@@ -51,9 +55,10 @@ case "${1:-}" in
         *) break ;;
       esac
     done
-    [[ -n $source_volume && -n $backup_directory && -d "$BACKFORT_FAKE_DOCKER_ROOT/volumes/$source_volume" ]] || exit 1
+    [[ -n $source_volume && -n $backup_directory && $capability == DAC_READ_SEARCH \
+      && -d "$BACKFORT_FAKE_DOCKER_ROOT/volumes/$source_volume" ]] || exit 1
     tar --create --file "$backup_directory/data.tar" --directory "$BACKFORT_FAKE_DOCKER_ROOT/volumes/$source_volume" .
-    log "volume-snapshot $source_volume"
+    log "volume-snapshot $source_volume capability=$capability"
     exit 0
     ;;
   cp)

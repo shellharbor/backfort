@@ -3,8 +3,11 @@
 Backfort treats each completed copy independently: a local backup and its S3
 copy can have different availability, and retention is evaluated for each job
 and destination. A backup is eligible only after its `.complete` marker exists.
+When a destination is shared, retention and date-range deletion are also
+scoped to the configured `host_id`; copies made by another host are skipped
+before validation or removal.
 
-## GFS retention and a hard expiry
+## GFS retention, a recovery floor, and an expiry
 
 ```yaml
 retention:
@@ -12,14 +15,20 @@ retention:
   keep_daily: 7
   keep_weekly: 4
   keep_monthly: 6
+  min_keep: 1
   max_age_days: 90
 ```
 
 The retained set is the union of the newest `keep_last` versions, newest
-version for the newest represented UTC days, ISO weeks and UTC months. The
-optional `max_age_days` is a hard limit: an *unpinned* copy older than that
-many full 24-hour periods is deleted even if a GFS slot would otherwise keep
-it. `keep_last` must be at least one.
+version for the newest represented UTC days, ISO weeks and UTC months.
+`min_keep` is an independent positive safety floor (default `1`): the newest N
+ordinary, unpinned completed versions remain recoverable even if every newer
+backup attempt has failed. It applies before both GFS pruning and age expiry.
+
+The optional `max_age_days` expires an *unpinned* copy older than that many
+full 24-hour periods even if a GFS slot would otherwise keep it, but it never
+removes a `min_keep` copy. Both `keep_last` and `min_keep` must be at least
+one.
 
 Prune is deliberately a separate operation. Preview it before scheduling:
 
@@ -32,8 +41,10 @@ backfort.sh -c /etc/backfort/config.yaml prune --job crm-production --dry-run
 ```
 
 This works for local and rclone destinations, including S3-compatible storage.
-Backfort validates the complete backup bundle before deleting it; malformed
-completed bundles stop pruning instead of being guessed at.
+Backfort validates the current host's complete backup bundle before deleting
+it; malformed completed bundles stop pruning instead of being guessed at.
+Foreign-host objects are deliberately out of scope and cannot block this
+host's retention run.
 
 ## Pin a recovery point
 
@@ -79,6 +90,8 @@ backfort.sh -c /etc/backfort/config.yaml delete \
 ```
 
 Pinned copies are reported as retained and are never removed by `delete`.
-Unpin first only after an intentional review. On remotes, Backfort removes the
-completion marker before the rest of the bundle, so an interrupted deletion
-can never leave a partial backup looking recoverable.
+Unpin first only after an intentional review. On local destinations and
+remotes, Backfort removes the completion marker before the rest of the bundle,
+so an interrupted deletion can never leave a partial backup looking
+recoverable. An interrupted removal may leave harmless orphan objects that no
+Backfort command treats as a completed copy.
