@@ -265,6 +265,14 @@ validate_env_name() {
   fi
 }
 
+validate_gpg_fingerprint() {
+  local kind=$1
+  local value=$2
+  if [[ ! $value =~ ^[A-Fa-f0-9]{40}$ && ! $value =~ ^[A-Fa-f0-9]{64}$ ]]; then
+    config_error "invalid-gpg-fingerprint kind=$kind"
+  fi
+}
+
 validate_integer() {
   local kind=$1
   local value=$2
@@ -1020,6 +1028,7 @@ validate_config() {
 
   local source_type destinations_count compression compression_level encryption signing
   local keep_last keep_daily keep_weekly keep_monthly max_age_days destination_name destination_index env_name minimum_copies
+  local recipient_count recipient_index recipient_env password_env identity_password_env
 
   for ((index = 0; index < JOB_COUNT; index++)); do
     validate_keys ".jobs[$index]" 'name source destinations compression encryption signing retention success hooks'
@@ -1084,11 +1093,14 @@ validate_config() {
     if [[ $(cfg "(.jobs[$index].encryption // {}) | type") != '!!map' ]]; then
       config_error "encryption-must-be-map job=$name"
     fi
-    validate_keys ".jobs[$index].encryption // {}" 'method recipient_env recipients_env identity_file_env password_env'
+    validate_keys ".jobs[$index].encryption // {}" 'method recipient_env recipients_env identity_file_env password_env identity_password_env'
     encryption=$(cfg ".jobs[$index].encryption.method // \"none\"")
     [[ $encryption == none || $encryption == age || $encryption == gpg ]] || config_error "unsupported-encryption job=$name method=$encryption"
+    identity_password_env=$(cfg ".jobs[$index].encryption.identity_password_env // \"\"")
+    if [[ $encryption != gpg && -n $identity_password_env ]]; then
+      config_error "identity-password-requires-gpg-encryption job=$name"
+    fi
     if [[ $encryption == age ]]; then
-      local recipient_count recipient_index recipient_env
       env_name=$(cfg ".jobs[$index].encryption.recipient_env // \"\"")
       [[ $(cfg "(.jobs[$index].encryption.recipients_env // []) | type") == '!!seq' ]] \
         || config_error "age-recipients-must-be-array job=$name"
@@ -1110,8 +1122,36 @@ validate_config() {
         validate_env_name "jobs[$index].encryption.identity_file_env" "$env_name"
       fi
     elif [[ $encryption == gpg ]]; then
-      env_name=$(cfg ".jobs[$index].encryption.password_env // \"\"")
-      validate_env_name "jobs[$index].encryption.password_env" "$env_name"
+      password_env=$(cfg ".jobs[$index].encryption.password_env // \"\"")
+      env_name=$(cfg ".jobs[$index].encryption.recipient_env // \"\"")
+      [[ $(cfg "(.jobs[$index].encryption.recipients_env // []) | type") == '!!seq' ]] \
+        || config_error "gpg-recipients-must-be-array job=$name"
+      recipient_count=$(cfg "(.jobs[$index].encryption.recipients_env // []) | length")
+      if [[ -n $password_env && ( -n $env_name || $recipient_count -gt 0 ) ]]; then
+        config_error "gpg-password-and-recipients-are-mutually-exclusive job=$name"
+      fi
+      if [[ -n $env_name && $recipient_count -gt 0 ]]; then
+        config_error "gpg-recipient-and-recipients-are-mutually-exclusive job=$name"
+      fi
+      if [[ -n $password_env ]]; then
+        validate_env_name "jobs[$index].encryption.password_env" "$password_env"
+        identity_password_env=$(cfg ".jobs[$index].encryption.identity_password_env // \"\"")
+        [[ -z $identity_password_env ]] \
+          || config_error "gpg-identity-password-requires-asymmetric-encryption job=$name"
+      elif [[ -n $env_name ]]; then
+        validate_env_name "jobs[$index].encryption.recipient_env" "$env_name"
+      else
+        ((recipient_count > 0)) || config_error "gpg-password-or-recipient-required job=$name"
+        for ((recipient_index = 0; recipient_index < recipient_count; recipient_index++)); do
+          recipient_env=$(cfg ".jobs[$index].encryption.recipients_env[$recipient_index]")
+          validate_env_name "jobs[$index].encryption.recipients_env[$recipient_index]" "$recipient_env"
+        done
+      fi
+      if [[ -z $password_env ]]; then
+        identity_password_env=$(cfg ".jobs[$index].encryption.identity_password_env // \"\"")
+        [[ -z $identity_password_env ]] \
+          || validate_env_name "jobs[$index].encryption.identity_password_env" "$identity_password_env"
+      fi
     fi
 
     if [[ $(cfg "(.jobs[$index].signing // {}) | type") != '!!map' ]]; then
@@ -1388,6 +1428,23 @@ preflight_docker_compose_source() {
   done
 }
 
+gpg_recipient_key_available() {
+  local fingerprint=$1 listing
+
+  listing=$(gpg --batch --no-tty --no-auto-key-retrieve --with-colons \
+    --list-keys "$fingerprint" 2>/dev/null) || return 1
+  awk -F: -v wanted="${fingerprint^^}" '
+    $1 == "pub" { primary_fingerprint_next = 1; next }
+    $1 == "fpr" {
+      if (primary_fingerprint_next && toupper($10) == wanted) {
+        found = 1
+      }
+      primary_fingerprint_next = 0
+    }
+    END { exit !found }
+  ' <<<"$listing"
+}
+
 preflight_job() {
   local index=$1
   local check_destinations=${2:-true}
@@ -1407,6 +1464,7 @@ preflight_job() {
   require_command df
   require_command awk
   require_command basename
+  require_command cat
   require_command chmod
   require_command cp
   require_command dirname
@@ -1439,9 +1497,30 @@ preflight_job() {
       ;;
     gpg)
       require_command gpg
-      env_name=$(cfg ".jobs[$index].encryption.password_env")
-      env_value=${!env_name-}
-      [[ -n $env_value ]] || config_error "missing-environment-variable job=$name variable=$env_name"
+      env_name=$(cfg ".jobs[$index].encryption.password_env // \"\"")
+      if [[ -n $env_name ]]; then
+        env_value=${!env_name-}
+        [[ -n $env_value ]] || config_error "missing-environment-variable job=$name variable=$env_name"
+      else
+        env_name=$(cfg ".jobs[$index].encryption.recipient_env // \"\"")
+        if [[ -n $env_name ]]; then
+          env_value=${!env_name-}
+          [[ -n $env_value ]] || config_error "missing-environment-variable job=$name variable=$env_name"
+          validate_gpg_fingerprint "jobs[$index].encryption.recipient_env.value" "$env_value"
+          gpg_recipient_key_available "$env_value" \
+            || config_error "gpg-recipient-key-not-available job=$name variable=$env_name"
+        else
+          recipient_count=$(cfg ".jobs[$index].encryption.recipients_env // [] | length")
+          for ((recipient_index = 0; recipient_index < recipient_count; recipient_index++)); do
+            env_name=$(cfg ".jobs[$index].encryption.recipients_env[$recipient_index]")
+            env_value=${!env_name-}
+            [[ -n $env_value ]] || config_error "missing-environment-variable job=$name variable=$env_name"
+            validate_gpg_fingerprint "jobs[$index].encryption.recipients_env[$recipient_index].value" "$env_value"
+            gpg_recipient_key_available "$env_value" \
+              || config_error "gpg-recipient-key-not-available job=$name variable=$env_name"
+          done
+        fi
+      fi
       ;;
   esac
   signing=$(cfg ".jobs[$index].signing.method // \"none\"")
@@ -2609,6 +2688,7 @@ create_manifest() {
       \"compression\": (.compression // {\"method\": \"gzip\", \"level\": 6}),
       \"encryption\": (.encryption // {\"method\": \"none\"}),
       \"signing\": (.signing // {\"method\": \"none\"}),
+      \"file_hash_algorithm\": \"sha256\",
       \"entries\": load(strenv(BF_MANIFEST_ENTRIES))
     }" "$CONFIG_FILE" >"$output"
 }
@@ -2986,15 +3066,45 @@ safe_manifest_entry_path() {
     && $path != */../* && $path != */.. && $path != *$'\n'* && $path != *$'\r'* && $path != *$'\t'* ]]
 }
 
+hash_regular_archive_files() {
+  local tar_file=$1
+  local output=$2
+  local helper="$WORK_DIRECTORY/archive-file-hash.sh"
+
+  cat >"$helper" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+case "${TAR_FILETYPE:-}:${TAR_FILENAME:-}" in
+  f:data/*)
+    digest=$(sha256sum | awk '{print $1}')
+    [[ $digest =~ ^[a-f0-9]{64}$ ]] || exit 1
+    printf '%s\t%s\0' "$digest" "$TAR_FILENAME"
+    ;;
+  *) cat >/dev/null ;;
+esac
+EOF
+  chmod 0700 "$helper"
+  if ! tar --extract --to-command="$helper" --file "$tar_file" >"$output"; then
+    rm -f -- "$helper"
+    return 1
+  fi
+  rm -f -- "$helper"
+}
+
 manifest_entries_from_tar() {
   local tar_file=$1
   local output=$2
   local listing="$WORK_DIRECTORY/manifest-entries.list"
+  local hash_records="$WORK_DIRECTORY/manifest-file-hashes.nul"
   local mode _owner size date_value time_value archive_path entry_path entry_type
+  local hash_record file_hash hashed_archive_path
   local count=0
 
   : >"$output"
   tar --list --verbose --full-time --numeric-owner --quoting-style=literal --file "$tar_file" >"$listing" || return 1
+  hash_regular_archive_files "$tar_file" "$hash_records" || return 1
+  exec 3<"$hash_records"
   while IFS=' ' read -r mode _owner size date_value time_value archive_path; do
     [[ $archive_path == data || $archive_path == data/ ]] && continue
     [[ $archive_path == data/* ]] || return 1
@@ -3013,9 +3123,23 @@ manifest_entries_from_tar() {
       printf '%s\n' "  type: $(yaml_quote "$entry_type")"
       printf '%s\n' "  size: $size"
       printf '%s\n' "  mtime: $(yaml_quote "$date_value $time_value")"
+      if [[ $entry_type == file ]]; then
+        IFS= read -r -d '' hash_record <&3 || return 1
+        [[ $hash_record == *$'\t'* ]] || return 1
+        file_hash=${hash_record%%$'\t'*}
+        hashed_archive_path=${hash_record#*$'\t'}
+        [[ $file_hash =~ ^[a-f0-9]{64}$ && $hashed_archive_path == "$archive_path" ]] || return 1
+        printf '%s\n' "  sha256: $(yaml_quote "$file_hash")"
+      fi
     } >>"$output"
     count=$((count + 1))
   done <"$listing"
+
+  if IFS= read -r -d '' <&3; then
+    exec 3<&-
+    return 1
+  fi
+  exec 3<&-
 
   if ((count == 0)); then
     printf '[]\n' >"$output"
@@ -3075,8 +3199,8 @@ encrypt_artifact() {
   local job_index=$2
   local input=$3
   local output=$4
-  local env_name recipient recipient_count recipient_index
-  local -a age_arguments
+  local env_name password_env recipient recipient_count recipient_index
+  local -a age_arguments gpg_arguments
 
   case "$method" in
     none)
@@ -3101,15 +3225,34 @@ encrypt_artifact() {
       fi
       ;;
     gpg)
-      env_name=$(cfg ".jobs[$job_index].encryption.password_env")
-      local secret=${!env_name-}
-      if ! gpg --batch --yes --pinentry-mode loopback --cipher-algo AES256 --compress-algo none \
-        --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
-        --passphrase-fd 3 --symmetric --output "$output" "$input" 3<<<"$secret"; then
+      password_env=$(cfg ".jobs[$job_index].encryption.password_env // \"\"")
+      if [[ -n $password_env ]]; then
+        local secret=${!password_env-}
+        if ! gpg --batch --yes --pinentry-mode loopback --cipher-algo AES256 --compress-algo none \
+          --s2k-mode 3 --s2k-digest-algo SHA512 --s2k-count 65011712 \
+          --passphrase-fd 3 --symmetric --output "$output" "$input" 3<<<"$secret"; then
+          secret=""
+          return 3
+        fi
         secret=""
-        return 3
+      else
+        gpg_arguments=(--batch --yes --no-tty --no-auto-key-retrieve --trust-model always --output "$output")
+        env_name=$(cfg ".jobs[$job_index].encryption.recipient_env // \"\"")
+        if [[ -n $env_name ]]; then
+          recipient=${!env_name-}
+          gpg_arguments+=(--recipient "$recipient")
+        else
+          recipient_count=$(cfg ".jobs[$job_index].encryption.recipients_env // [] | length")
+          for ((recipient_index = 0; recipient_index < recipient_count; recipient_index++)); do
+            env_name=$(cfg ".jobs[$job_index].encryption.recipients_env[$recipient_index]")
+            recipient=${!env_name-}
+            gpg_arguments+=(--recipient "$recipient")
+          done
+        fi
+        if ! gpg "${gpg_arguments[@]}" --encrypt "$input"; then
+          return 3
+        fi
       fi
-      secret=""
       ;;
   esac
 }
@@ -4516,7 +4659,7 @@ verify_signature() {
 }
 
 ensure_selected_archive_streamable() {
-  local encryption compression env_name identity_file secret
+  local encryption compression env_name identity_file password_env identity_password_env secret
 
   if [[ $(destination_type "$BACKUP_DESTINATION_INDEX") == rclone ]]; then
     require_command rclone
@@ -4535,11 +4678,21 @@ ensure_selected_archive_streamable() {
       ;;
     gpg)
       require_command gpg
-      env_name=$(selected_metadata_value '.encryption.password_env // ""') || return 3
-      validate_env_name encryption.password_env "$env_name"
-      secret=${!env_name-}
-      [[ -n $secret ]] || config_error "missing-environment-variable variable=$env_name"
-      secret=""
+      password_env=$(selected_metadata_value '.encryption.password_env // ""') || return 3
+      if [[ -n $password_env ]]; then
+        validate_env_name encryption.password_env "$password_env"
+        secret=${!password_env-}
+        [[ -n $secret ]] || config_error "missing-environment-variable variable=$password_env"
+        secret=""
+      else
+        identity_password_env=$(selected_metadata_value '.encryption.identity_password_env // ""') || return 3
+        if [[ -n $identity_password_env ]]; then
+          validate_env_name encryption.identity_password_env "$identity_password_env"
+          secret=${!identity_password_env-}
+          [[ -n $secret ]] || config_error "missing-environment-variable variable=$identity_password_env"
+          secret=""
+        fi
+      fi
       ;;
     *)
       log error "kind=archive backup_id=$BACKUP_ID message=unknown-encryption-method"
@@ -4576,7 +4729,7 @@ stream_selected_payload() {
 }
 
 stream_selected_decrypted_payload() {
-  local encryption env_name identity_file secret
+  local encryption env_name identity_file password_env identity_password_env secret
   encryption=$(selected_metadata_value '.encryption.method // "none"') || return 3
   case "$encryption" in
     none) stream_selected_payload ;;
@@ -4586,10 +4739,23 @@ stream_selected_decrypted_payload() {
       stream_selected_payload | age --decrypt --identity "$identity_file"
       ;;
     gpg)
-      env_name=$(selected_metadata_value '.encryption.password_env // ""') || return 3
-      secret=${!env_name-}
-      stream_selected_payload | gpg --batch --yes --pinentry-mode loopback --passphrase-fd 3 --decrypt 3<<<"$secret"
-      secret=""
+      password_env=$(selected_metadata_value '.encryption.password_env // ""') || return 3
+      if [[ -n $password_env ]]; then
+        secret=${!password_env-}
+        stream_selected_payload | gpg --batch --yes --no-tty --no-auto-key-retrieve \
+          --pinentry-mode loopback --passphrase-fd 3 --decrypt 3<<<"$secret"
+        secret=""
+      else
+        identity_password_env=$(selected_metadata_value '.encryption.identity_password_env // ""') || return 3
+        if [[ -n $identity_password_env ]]; then
+          secret=${!identity_password_env-}
+          stream_selected_payload | gpg --batch --yes --no-tty --no-auto-key-retrieve \
+            --pinentry-mode loopback --passphrase-fd 3 --decrypt 3<<<"$secret"
+          secret=""
+        else
+          stream_selected_payload | gpg --batch --yes --no-tty --no-auto-key-retrieve --decrypt
+        fi
+      fi
       ;;
     *) return 3 ;;
   esac
@@ -4604,6 +4770,84 @@ stream_selected_archive() {
     none) stream_selected_decrypted_payload ;;
     *) return 3 ;;
   esac
+}
+
+verify_manifest_file_hashes() {
+  local tar_file=$1
+  local manifest=$2
+  local algorithm expected_records actual_records
+  local entry_path entry_type expected_hash extra
+  local hash_record actual_hash actual_archive_path
+
+  algorithm=$(metadata_value "$manifest" '.file_hash_algorithm // ""') || return 3
+  case "$algorithm" in
+    '') return 0 ;;
+    sha256) : ;;
+    *)
+      log error "kind=verify backup_id=$BACKUP_ID message=unsupported-file-hash-algorithm"
+      return 3
+      ;;
+  esac
+  if [[ $(metadata_value "$manifest" '.entries | type') != '!!seq' ]]; then
+    log error "kind=verify backup_id=$BACKUP_ID message=file-hash-entries-missing"
+    return 3
+  fi
+
+  expected_records="$WORK_DIRECTORY/manifest-file-hashes.tsv"
+  actual_records="$WORK_DIRECTORY/archive-file-hashes.nul"
+  if ! yq eval -o=tsv '.entries | map([.path, .type, (.sha256 // "")])' "$manifest" >"$expected_records" \
+    || ! hash_regular_archive_files "$tar_file" "$actual_records"; then
+    log error "kind=verify backup_id=$BACKUP_ID message=file-hash-read-failed"
+    return 3
+  fi
+
+  exec 3<"$actual_records"
+  while IFS=$'\t' read -r entry_path entry_type expected_hash extra; do
+    if [[ -n ${extra:-} ]] || ! safe_manifest_entry_path "$entry_path"; then
+      exec 3<&-
+      log error "kind=verify backup_id=$BACKUP_ID message=file-hash-manifest-invalid"
+      return 3
+    fi
+    case "$entry_type" in
+      file)
+        if [[ ! $expected_hash =~ ^[a-f0-9]{64}$ ]] \
+          || ! IFS= read -r -d '' hash_record <&3 \
+          || [[ $hash_record != *$'\t'* ]]; then
+          exec 3<&-
+          log error "kind=verify backup_id=$BACKUP_ID message=file-hash-manifest-invalid"
+          return 3
+        fi
+        actual_hash=${hash_record%%$'\t'*}
+        actual_archive_path=${hash_record#*$'\t'}
+        if [[ ! $actual_hash =~ ^[a-f0-9]{64}$ \
+          || $actual_archive_path != "data/$entry_path" \
+          || $actual_hash != "$expected_hash" ]]; then
+          exec 3<&-
+          log error "kind=verify backup_id=$BACKUP_ID message=file-hash-mismatch"
+          return 3
+        fi
+        ;;
+      directory|symlink|hardlink)
+        if [[ -n $expected_hash ]]; then
+          exec 3<&-
+          log error "kind=verify backup_id=$BACKUP_ID message=file-hash-manifest-invalid"
+          return 3
+        fi
+        ;;
+      *)
+        exec 3<&-
+        log error "kind=verify backup_id=$BACKUP_ID message=file-hash-manifest-invalid"
+        return 3
+        ;;
+    esac
+  done <"$expected_records"
+
+  if IFS= read -r -d '' <&3; then
+    exec 3<&-
+    log error "kind=verify backup_id=$BACKUP_ID message=file-hash-manifest-invalid"
+    return 3
+  fi
+  exec 3<&-
 }
 
 prepare_tar() {
@@ -4661,6 +4905,7 @@ prepare_tar() {
     log error "kind=verify backup_id=$BACKUP_ID message=manifest-content-mismatch"
     return 3
   fi
+  verify_manifest_file_hashes "$tar_file" "$internal_manifest"
 }
 
 find_completed_backup_destination() {
@@ -5001,10 +5246,14 @@ diff_command() {
 verify_command() {
   require_command sha256sum
   require_command awk
+  require_command cat
+  require_command chmod
   require_command cmp
   require_command find
   require_command flock
+  require_command rm
   require_command sort
+  require_command tar
   if ! acquire_lock; then
     return 3
   fi
@@ -5047,9 +5296,13 @@ restore_command() {
   validate_absolute_path restore.to "$RESTORE_DIRECTORY"
   require_command sha256sum
   require_command awk
+  require_command cat
+  require_command chmod
   require_command cmp
   require_command find
+  require_command rm
   require_command sort
+  require_command tar
 
   if [[ $DRY_RUN == true ]]; then
     if ! select_backup "$BACKUP_REFERENCE"; then

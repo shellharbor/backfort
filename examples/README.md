@@ -14,6 +14,7 @@ backfort.sh -c /etc/backfort/config.yaml --dry-run run
 | [files-local.yaml](files-local.yaml) | One server, one local recovery copy |
 | [files-local-and-rclone.yaml](files-local-and-rclone.yaml) | Local recovery copy plus required offsite rclone copy |
 | [files-age-rclone.yaml](files-age-rclone.yaml) | Encrypted offsite copy with age |
+| [files-gpg-asymmetric.yaml](files-gpg-asymmetric.yaml) | GPG public-key backup with independent recovery recipients |
 | [files-with-hooks.yaml](files-with-hooks.yaml) | Application maintenance-mode hook before and after an offsite backup |
 | [files-prometheus.yaml](files-prometheus.yaml) | Local backup with node_exporter Prometheus textfile metrics |
 | [docker-compose-postgres.yaml](docker-compose-postgres.yaml) | Compose project with PostgreSQL, a selected named volume, bind mount and rclone copy |

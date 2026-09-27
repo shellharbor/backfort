@@ -51,6 +51,16 @@ integrity, availability, and recovery safety.
 If a secret is accidentally committed, revoke or rotate it immediately. Removing
 the value from a later commit does not make the original exposure harmless.
 
+## Asymmetric GPG boundary
+
+For asymmetric GPG jobs, Backfort accepts only exact 40- or 64-hex primary-key
+fingerprints and verifies that the corresponding public keys are already in the
+local keyring. It does not auto-retrieve keys from a keyserver, and it never
+uses an email address or short key ID to select a recipient. A backup writer
+should hold public keys only. Keep matching private keys and any private-key
+passphrase on a separately controlled recovery host; never place either in
+Backfort YAML, logs, examples, issues, or the backup server's keyring.
+
 ## Disclosure
 
 Please give maintainers a reasonable opportunity to investigate and prepare a

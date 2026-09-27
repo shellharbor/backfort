@@ -6,6 +6,11 @@ configuration is YAML and the executable is `backfort.sh`.
 ## Current scope
 
 - Full file and Docker Compose backups to local or rclone destinations.
+- Encryption supports multi-recipient age, hardened symmetric GPG, and
+  asymmetric GPG. An asymmetric writer imports only verified recipient public
+  keys and encrypts to exact 40- or 64-hex primary fingerprints; the private
+  key stays on a separate recovery host. An optional identity-passphrase
+  environment variable is read only during full verification or restore.
 - Saved jobs may declare executable `hooks.pre` and `hooks.post` lifecycle
   scripts for application quiescing and cleanup. Hooks use literal YAML
   argument arrays, run in a scrubbed non-secret environment, and must be
@@ -37,6 +42,10 @@ configuration is YAML and the executable is `backfort.sh`.
 - A completed bundle has payload, metadata, checksum and `.complete`; optional
   `.minisig` authenticates the payload and optional `.pinned` stores a pin UTC
   timestamp plus a non-secret reason.
+- New manifests declare `file_hash_algorithm: sha256` and record a SHA-256
+  value for each regular archive file. Full verification and restore recompute
+  those values from the archived bytes; legacy manifests without the marker
+  retain their established archive-level verification path.
 - `list`, `status`, `verify`, `restore`, `prune`, `delete`, and `watchdog` operate only
   on complete, structurally valid bundles.
 - `diff ID1 ID2` compares the indexed manifest entries of two completed copies
@@ -82,14 +91,22 @@ configuration is YAML and the executable is `backfort.sh`.
 - Backup creation and pruning use a shared non-blocking lock. `watchdog` does
   not take that lock so monitoring is not delayed by a running backup.
 - Logs are structured `key=value` records. Do not put credentials or private
-  key material into configuration, test fixtures, or log output.
+  key material into configuration, test fixtures, or log output. GPG public
+  recipient fingerprints are not secrets, but private keys and their
+  passphrases never belong on a backup writer.
 
 ## Verification
 
 Run syntax checks, ShellCheck, and the individual scripts in `tests/`.
+`tests/file-hashes.sh` proves that new manifests hash regular files, full
+verification rejects a changed archived file even after its outer checksum is
+rewritten, and legacy manifests remain verifiable.
 `tests/metrics.sh` covers the Prometheus output contract, partial results,
 strict schema validation, `doctor` readiness, and a non-fatal post-run metrics
 write failure.
+`tests/gpg-asymmetric.sh` creates temporary GnuPG keyrings to prove that a
+writer with only a recipient public key can create a backup recovered by the
+separate private keyring.
 GitHub Actions runs the full test set on Ubuntu with Mike Farah yq v4 and a
 Bash 4.3 syntax gate. CodeQL scans workflow definitions; OpenSSF Scorecard
 publishes supply-chain findings; a `v*` tag must match the release-ready CLI

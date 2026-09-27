@@ -5,6 +5,19 @@ once a release is tagged.
 
 ## Unreleased 0.5.0
 
+- Added per-file SHA-256 values for regular archive files in new manifests.
+  Full verification and normal restore recompute them from the tar stream,
+  detecting changed archive content even when an outer payload checksum was
+  replaced. Older manifests remain compatible with their existing
+  archive-level validation.
+- Added asymmetric GPG encryption with one or more exact public-key
+  fingerprints. A backup writer needs only public keys; recovery uses the
+  matching private key on a separate host. Symmetric GPG remains supported,
+  and an optional recovery-only private-key passphrase environment variable
+  supports unattended full verification and restore.
+- Added hermetic GPG configuration coverage and an integration test that proves
+  a public-key-only writer can create a backup restored by a separate private
+  keyring.
 - Added `restore-compose` for verified, staged Docker Compose recovery. It
   prints recovery actions by default and can import PostgreSQL, MySQL, and
   MariaDB logical dumps into an existing running target project only with

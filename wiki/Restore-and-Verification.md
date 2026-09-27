@@ -32,6 +32,20 @@ backfort.sh -c /etc/backfort/config.yaml verify web-20260926T020000Z --full
 backfort.sh -c /etc/backfort/config.yaml verify web-20260926T020000Z --from r2-archive
 ```
 
+Quick verification checks the published payload checksum and any configured
+signature. Full verification also decrypts and reads the archive, confirms its
+safe layout and matching internal manifest, then recomputes SHA-256 for every
+regular `data/` file against the manifest. It is the check to run before a
+recovery drill and is automatically part of a normal restore.
+
+New backups record `file_hash_algorithm: sha256` and a `sha256` value for each
+regular manifest entry. Directories, symlinks, and hard links have no
+file-content hash. This catches a changed or truncated archived file even if a
+damaged payload has been given a new outer checksum. It does not replace a
+signature: an attacker who can replace both payload and manifest needs to be
+stopped by Minisign or immutable storage. Older backups without this manifest
+field remain recoverable with the archive-level checks available at the time.
+
 Verification detects a missing completion marker, manifest mismatch, corrupt
 archive, signature failure where configured, and unavailable storage. A version
 without `.complete` is incomplete and must never be selected for recovery.
@@ -76,7 +90,20 @@ docker run --rm \
   alpine:3.20 sh -c 'cd /target && tar xf /backup/data.tar'
 ```
 
-Use a logical dump for the database itself. Examples:
+Use the recovery assistant for PostgreSQL, MySQL, and MariaDB after creating
+the target project and starting only its database containers. It re-stages the
+verified backup into the named, empty staging directory before the import:
+
+```bash
+backfort.sh -c /etc/backfort/config.yaml \
+  restore-compose latest --job crm --to /recovery/crm-import \
+  --project-dir /srv/crm-recovery --apply --confirm
+```
+
+It will not copy recovered Compose files, unpack a volume, or start Compose.
+PostgreSQL global-role dumps remain manual because role changes have a broader
+security impact. If you need a fully manual drill, the equivalent database
+commands are:
 
 ```bash
 # PostgreSQL custom format
@@ -94,10 +121,28 @@ docker compose exec -T db mysql -u root -p crm \
 ```
 
 For MS SQL Server and Oracle, import the retained database export using the
-vendor-supported tool and a target instance with a compatible version. Review
-the dump type, engine version and user privileges before running it.
+vendor-supported tool and a target instance with a compatible version. The
+assistant deliberately refuses `--apply` for a job containing either engine,
+so it cannot perform a partial multi-engine recovery. Review the dump type,
+engine version and user privileges before running it.
 
 ## A recovery drill
+
+### Asymmetric GPG recovery boundary
+
+An asymmetric-GPG writer has only the recipient public key in its GnuPG
+keyring. Keep the corresponding private key on a separate, access-controlled
+recovery host. Before a full verification or restore, import that private key
+there and use the same Backfort configuration that created the copy. If the
+private key has a passphrase, provide the value through the configured
+`identity_password_env` using your secret manager, or unlock it with the local
+GnuPG agent first. Never move the private key or its passphrase to the backup
+writer.
+
+`doctor` on the writer verifies that every configured public recipient is an
+exact fingerprint already present in its keyring. It does not fetch keys from
+the network. See [Configuration](Configuration#compression-encryption-and-signing)
+for the recipient configuration and public-key import procedure.
 
 At least quarterly, choose a recent off-site backup and prove that it works:
 

@@ -76,7 +76,8 @@ same local and rclone destinations as a file backup.
 - A staged Compose recovery assistant with an explicit, double-confirmed
   logical database import for PostgreSQL, MySQL and MariaDB
 - `gzip`, `zstd`, or uncompressed archives
-- Optional multi-recipient `age` or hardened symmetric GPG encryption
+- Optional multi-recipient `age` or GPG encryption; GPG supports hardened
+  symmetric passwords and asymmetric public-key recipients
 - Optional detached Minisign payload signatures for untrusted storage
 - Multiple independent local or rclone destinations
 - Offsite copies through rclone, including AWS S3, DigitalOcean Spaces, Vultr
@@ -84,7 +85,7 @@ same local and rclone destinations as a file backup.
   other rclone-supported remotes
 - Explicit `min_copies` policy for a successful backup
 - Atomic publication using a final `.complete` marker
-- Fast checksum verification and full decrypt/decompress/archive verification
+- Fast payload checksum verification plus full per-file SHA-256 verification
 - Safe restore into a new or empty directory
 - Opt-in interactive restore version selection for a manual terminal session
 - GFS-style `keep_last`, daily, weekly, and monthly retention
@@ -787,7 +788,8 @@ be used together with `recipients_env`. The production server may omit every
 private identity entirely. In that case it can create encrypted backups and run
 `verify --quick`, but it cannot decrypt, fully verify, or restore them.
 
-GPG support in 0.5 is symmetric:
+GPG has two mutually exclusive modes. The existing symmetric mode uses a
+password from an environment variable:
 
 ```yaml
 encryption:
@@ -798,6 +800,47 @@ encryption:
 Backfort passes the password through a dedicated file descriptor rather than
 as a command-line argument. It configures GPG with iterated SHA-512 S2K at the
 maximum OpenPGP count supported by GnuPG.
+
+For asymmetric GPG, the backup server imports **only public keys** and encrypts
+to exact primary-key fingerprints. This lets a compromised backup writer create
+new copies but not decrypt historic ones. Use either a single `recipient_env`
+or a resilient `recipients_env` list; the variable values must be 40- or
+64-hex-character primary fingerprints:
+
+```yaml
+encryption:
+  method: gpg
+  recipients_env:
+    - BACKFORT_GPG_RECIPIENT_PRIMARY
+    - BACKFORT_GPG_RECIPIENT_RECOVERY
+  # Optional: needed only when the recovery private key is passphrase-protected
+  # and its GnuPG agent has not already unlocked it.
+  identity_password_env: BACKFORT_GPG_IDENTITY_PASSWORD
+```
+
+Prepare and verify the recovery key on a trusted recovery machine. Export only
+its public half to the backup writer:
+
+```bash
+# Trusted recovery machine: record this full fingerprint out of band.
+gpg --quick-generate-key 'Backfort recovery <recovery@example.test>' default default never
+gpg --fingerprint 'Backfort recovery <recovery@example.test>'
+gpg --armor --export FINGERPRINT > backfort-recovery-public.asc
+
+# Backup writer: import the verified public export; never import its private key.
+sudo gpg --batch --import backfort-recovery-public.asc
+export BACKFORT_GPG_RECIPIENT_PRIMARY='0123456789ABCDEF0123456789ABCDEF01234567'
+```
+
+Backfort checks that every configured fingerprint is syntactically exact and
+already present in the local keyring during `doctor`; it never retrieves keys
+from the network. It deliberately encrypts to the exact configured fingerprint,
+not an ambiguous email address or short key ID. On the separate recovery host,
+import the private key through your approved key-handling process. For an
+unattended full verification or restore, set the optional
+`BACKFORT_GPG_IDENTITY_PASSWORD` from a secret manager; otherwise unlock the
+private key through the local GnuPG agent first. Do not copy that private key or
+its passphrase to the backup writer.
 
 ### Detached Minisign signatures
 
@@ -850,9 +893,10 @@ runtime marker:
 ```
 
 The manifest is also stored inside the tar archive as `manifest.json`. New
-backups include an `entries` index with each path's type, size, and mtime for
-read-only version comparison. Source data is stored below `data/`. A Compose
-restore contains `compose/`,
+backups declare `file_hash_algorithm: sha256`. Every regular file in the
+`entries` index has a `sha256` value alongside its path, type, size, and mtime;
+directories and links deliberately do not have a file-content hash. Source
+data is stored below `data/`. A Compose restore contains `compose/`,
 `volumes/<logical-name>/data.tar`, `bind-mounts/<name>/` and
 `databases/<database-name>/` below that root. Backfort writes every destination
 file through a temporary name and publishes `.complete` last. `list`, `status`,
@@ -869,23 +913,31 @@ backfort.sh -c /etc/backfort/config.yaml verify BACKUP_ID --quick
 ```
 
 Full verification additionally decrypts and decompresses the payload, reads
-the entire tar archive, checks entry types and paths, and compares the internal
-manifest with the external metadata:
+the entire tar archive, checks entry types and paths, compares the internal
+manifest with the external metadata, and recomputes SHA-256 for every regular
+file in `data/` against the manifest:
 
 ```bash
 backfort.sh -c /etc/backfort/config.yaml verify BACKUP_ID --full
 ```
 
-SHA-256 detects accidental corruption. A configured detached signature makes a
-payload substitution detectable when the attacker does not have its private
-signing key; immutable storage is still recommended.
+The per-file pass detects a changed, truncated, swapped, or missing regular
+file even when a damaged payload was given a new outer checksum. `--quick`
+remains intentionally fast and checks only the final payload checksum (and an
+optional signature); schedule `--full` and use it before every recovery drill.
+Backups written before per-file hashes existed remain restorable and receive
+the established archive-level checks, but cannot receive the new per-file
+pass. SHA-256 detects accidental corruption. A configured detached signature
+makes a payload and manifest substitution detectable when the attacker does
+not have its private signing key; immutable storage is still recommended.
 
 ## Restore safety
 
 Restore requires an explicit absolute target directory. The directory must be
-new or empty. Backfort verifies a configured signature and checksum, decrypts and decompresses the
-archive, rejects unexpected archive paths and special device entries, and
-extracts without restoring archived ownership.
+new or empty. Backfort verifies a configured signature and checksum, decrypts
+and decompresses the archive, performs the same available per-file SHA-256
+pass as `verify --full`, rejects unexpected archive paths and special device
+entries, and extracts without restoring archived ownership.
 
 Backfort deliberately has no in-place restore and no `--force` option. A failed
 extraction may leave partial data in the restore target for inspection; it never
@@ -1174,11 +1226,13 @@ and content comparison:
 ```bash
 bash -n backfort.sh tests/*.sh
 bash tests/smoke.sh
+bash tests/file-hashes.sh
 bash tests/quick.sh
 bash tests/rclone-smoke.sh
 bash tests/compose-smoke.sh
 bash tests/restore-compose.sh
 bash tests/crypto-smoke.sh
+bash tests/gpg-asymmetric.sh
 bash tests/watchdog.sh
 bash tests/diff.sh
 bash tests/pinned.sh
@@ -1219,8 +1273,6 @@ pushed.
 - Full backups only; no incremental mode or deduplication
 - No native S3, SSH or WebDAV destination; use rclone for supported remotes
 - No built-in status page; use Prometheus textfile metrics or `watchdog`
-- No per-file checksums inside the manifest; the complete payload is checksummed
-- GPG encryption is symmetric only
 - GNU userland is required
 - No automatic in-place Compose restore or restore drill; recovery is staged
   into an empty directory and then deliberately applied to a separate project

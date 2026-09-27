@@ -117,8 +117,19 @@ jobs:
       #   - BACKFORT_AGE_RECIPIENT_PRIMARY
       #   - BACKFORT_AGE_RECIPIENT_RECOVERY
       # identity_file_env: BACKFORT_AGE_IDENTITY_FILE
-      # gpg symmetric encryption:
+      # GPG symmetric encryption (backward-compatible):
       # password_env: BACKFORT_GPG_PASSWORD
+      # GPG asymmetric encryption: import each recipient's public key into the
+      # Backfort account's GnuPG keyring, then set exact 40- or 64-hex primary
+      # key fingerprints in these environment variables. Do not put a private
+      # key on the backup server.
+      # recipient_env: BACKFORT_GPG_RECIPIENT
+      # recipients_env:
+      #   - BACKFORT_GPG_RECIPIENT_PRIMARY
+      #   - BACKFORT_GPG_RECIPIENT_RECOVERY
+      # Optional only for asymmetric recovery: the passphrase for the local
+      # private key. Omit it when the GnuPG agent has already unlocked the key.
+      # identity_password_env: BACKFORT_GPG_IDENTITY_PASSWORD
 
     signing:
       method: none       # none | minisign

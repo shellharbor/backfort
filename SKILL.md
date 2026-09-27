@@ -35,6 +35,10 @@ product sources:
   signatures and `.pinned` markers have their documented roles.
 - Never make `list`, `status`, `verify`, `restore`, `prune`, `delete`, `diff`,
   or `watchdog` treat an incomplete or malformed bundle as valid.
+- New manifests record a SHA-256 value for every regular archive file. Keep
+  `verify --full` and normal restore recomputing and comparing those hashes
+  before extraction; retain compatibility with legacy manifests that predate
+  the explicit `file_hash_algorithm` marker.
 - Keep normal restore staged: it requires a new or empty explicit directory.
   Do not introduce in-place restore or a force-overwrite path casually.
 - `success.min_copies` determines success across independent destinations. A
@@ -56,6 +60,11 @@ product sources:
 - Configuration stores environment-variable *names*, never secret values.
   Keep credentials, identities, keys and tokens out of YAML, examples, tests,
   logs, generated recovery configuration and notification text.
+- Asymmetric GPG uses exact 40- or 64-hex public-key fingerprints supplied by
+  environment variables. The backup writer may import only verified public
+  keys; private keys and any `identity_password_env` value remain on a separate
+  recovery host. Do not weaken the no-auto-retrieve or exact-fingerprint
+  recipient boundary.
 - Validate paths, identifiers, YAML keys, dates, destination names and template
   placeholders at the boundary. Preserve the existing strict unknown-key checks.
 - Do not use `eval`, template-driven shell execution, or user-controlled
@@ -102,14 +111,14 @@ bash tests/smoke.sh
 
 Run the specialized test when its surface changes: `quick.sh`,
 `rclone-smoke.sh`, `compose-smoke.sh`, `restore-compose.sh`,
-`crypto-smoke.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
+`crypto-smoke.sh`, `gpg-asymmetric.sh`, `file-hashes.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
 `delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, or `metrics.sh`.
 For release stabilization, also verify direct execution from a clean Linux
 checkout: `backfort.sh` and executable test adapters must retain mode `0755`.
-CI provides Mike Farah `yq` v4, ShellCheck and Python on Ubuntu; generated JSON
-filters must use syntax supported by that version. If a local dependency is
-unavailable, do not install it without authorization; report the exact skipped
-check and residual risk. CI also checks Bash 4.3 parsing; CodeQL and OpenSSF
+CI provides Mike Farah `yq` v4, GnuPG, ShellCheck and Python on Ubuntu;
+generated JSON filters must use syntax supported by that version. If a local
+dependency is unavailable, do not install it without authorization; report the
+exact skipped check and residual risk. CI also checks Bash 4.3 parsing; CodeQL and OpenSSF
 Scorecard scan the GitHub automation, while the release metadata workflow
 requires a `vX.Y.Z` tag to match a non-development CLI version and Changelog
 heading.

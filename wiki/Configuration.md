@@ -160,7 +160,8 @@ export BACKFORT_AGE_PRIMARY='age1...'
 export BACKFORT_AGE_RECOVERY='age1...'
 ```
 
-For symmetric GPG, use only an environment-variable name in YAML:
+GPG supports two mutually exclusive modes. The backwards-compatible symmetric
+mode uses only an environment-variable name in YAML:
 
 ```yaml
 encryption:
@@ -170,6 +171,28 @@ encryption:
 
 Never add the secret value to YAML, a shell history entry, an example, or a
 repository commit.
+
+For asymmetric GPG, import verified public keys into the keyring of the account
+that runs Backfort. Refer to one exact 40- or 64-hex primary fingerprint, or a
+list of independent recovery fingerprints, through environment-variable names:
+
+```yaml
+encryption:
+  method: gpg
+  recipients_env:
+    - BACKFORT_GPG_RECIPIENT_PRIMARY
+    - BACKFORT_GPG_RECIPIENT_RECOVERY
+  # Optional and used only while decrypting with a passphrase-protected key:
+  identity_password_env: BACKFORT_GPG_IDENTITY_PASSWORD
+```
+
+The backup writer needs public keys only. `doctor` validates that every
+fingerprint value is exact and already available locally; Backfort never
+downloads a key and never accepts a short key ID or email address. The private
+key remains on a separate recovery host. Set `identity_password_env` there for
+unattended restore/full verification, or omit it when the local GnuPG agent has
+already unlocked the private key. `password_env` cannot be combined with either
+recipient setting.
 
 Continue with [Destinations and S3](Destinations-and-S3) for offsite storage
 and [Automation and Notifications](Automation-and-Notifications) for scheduled

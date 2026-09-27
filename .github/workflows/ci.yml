@@ -34,7 +34,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends shellcheck python3
+          sudo apt-get install --yes --no-install-recommends gnupg shellcheck python3
           go install github.com/mikefarah/yq/v4@v4.45.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
@@ -61,6 +61,9 @@ jobs:
       - name: Run smoke test
         run: bash tests/smoke.sh
 
+      - name: Run per-file hash test
+        run: bash tests/file-hashes.sh
+
       - name: Run quick backup test
         run: bash tests/quick.sh
 
@@ -75,6 +78,9 @@ jobs:
 
       - name: Run encryption and signing smoke test
         run: bash tests/crypto-smoke.sh
+
+      - name: Run asymmetric GPG integration test
+        run: bash tests/gpg-asymmetric.sh
 
       - name: Run watchdog test
         run: bash tests/watchdog.sh
