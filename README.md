@@ -460,8 +460,9 @@ selected services, selected volumes and the helper image. The helper runs with
 no network, a read-only root filesystem and a read-only source-volume mount.
 Backfort drops every Linux capability, then adds only `DAC_READ_SEARCH` so a
 trusted helper can archive application-owned `0700` directories. Choose a
-pinned image that includes `tar` and runs that command as root; the only
-writable mount is the temporary archive target.
+pinned image that includes `tar` and runs that command as root. The helper
+has no writable mount: Backfort captures its archive stream into its protected
+temporary workspace.
 
 The `password_env` value is the **name** of a host environment variable, not a
 password. Backfort passes its value into the target container using the engine's

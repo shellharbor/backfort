@@ -57,16 +57,17 @@ source:
   volume_helper_image: registry.example/backfort-volume-helper@sha256:REPLACE_WITH_DIGEST
 ```
 
-The Docker daemon must be available to the account running Backfort, and the
-helper needs a writable target mount. Backfort gives the helper no network, a
-read-only root filesystem, a read-only source volume, and no Linux
-capabilities except `DAC_READ_SEARCH`. That single capability lets a trusted
-GNU `tar` helper traverse application-owned `0700` volume directories without
-granting write, network, or general privilege. Pin an image that includes
-GNU `tar` and runs the helper command as root. Backfort requires its support
-for ACLs, extended attributes and sparse files. Run `backfort.sh doctor` after
-setting this up: it checks Docker and reports unavailable prerequisites before
-the backup window.
+The Docker daemon must be available to the account running Backfort. Backfort
+gives the helper no network, a read-only root filesystem, a read-only source
+volume, and no writable mount. It captures the helper's archive stream itself
+inside its protected temporary workspace. The helper has no Linux capabilities
+except `DAC_READ_SEARCH`. That single capability lets a trusted GNU `tar`
+helper traverse application-owned `0700` volume directories without granting
+write, network, or general privilege. Pin an image that includes GNU `tar` and
+runs the helper command as root. Backfort requires its support for ACLs,
+extended attributes and sparse files. Run `backfort.sh doctor` after setting
+this up: it checks Docker and reports unavailable prerequisites before the
+backup window.
 
 ## Database dumps
 

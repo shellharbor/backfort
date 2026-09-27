@@ -3229,12 +3229,15 @@ snapshot_compose_volume() {
   docker_volume=$(compose_volume_name "$job_index" "$logical_volume") || return 3
   target="$snapshot_directory/volumes/$logical_volume"
   mkdir -p -- "$target"
-  # The helper stays networkless and read-only. DAC_READ_SEARCH is the minimum
-  # capability needed for root in the helper to traverse Docker volume content
-  # owned by an application UID (for example PostgreSQL's 0700 data directory).
+  # The helper stays networkless and read-only. Its archive stream is written
+  # by Backfort into the protected workspace, so it receives no writable host
+  # mount. DAC_READ_SEARCH is the minimum capability needed for root in the
+  # helper to traverse Docker volume content owned by an application UID (for
+  # example PostgreSQL's 0700 data directory).
   if ! docker_job_with_timeout "$job_index" run --rm --pull=never --network none --read-only --cap-drop ALL --cap-add DAC_READ_SEARCH \
-    -v "$docker_volume:/source:ro" -v "$target:/backup:rw" "$helper_image" \
-    tar --create --xattrs --acls --sparse --ignore-failed-read --file /backup/data.tar --directory /source .; then
+    -v "$docker_volume:/source:ro" "$helper_image" \
+    tar --create --xattrs --acls --sparse --ignore-failed-read --file - --directory /source . >"$target/data.tar"; then
+    rm -f -- "$target/data.tar"
     log error "kind=compose-volume job=$(cfg ".jobs[$job_index].name") volume=$logical_volume message=snapshot-failed"
     return 3
   fi

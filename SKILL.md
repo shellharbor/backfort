@@ -71,11 +71,13 @@ ignored workspace state, not a project artifact.
 - Docker Compose backups are explicit. Never infer files, volumes, bind mounts
   or database services from an image or a Compose file. Database volumes do not
   replace logical engine dumps.
-- Compose volume helpers remain networkless with a read-only root filesystem
-  and source mount. Keep the capability set minimal: `DAC_READ_SEARCH` is the
-  only added capability, so app-owned `0700` data can be read without granting
-  write or broader privilege. Do not use an unguarded `mktemp`: a workspace
-  creation failure must stop the command before any later path is formed.
+- Compose volume helpers remain networkless with a read-only root filesystem,
+  source mount and no writable mount; Backfort owns the archive-stream output
+  in its protected workspace. Keep the capability set minimal:
+  `DAC_READ_SEARCH` is the only added capability, so app-owned `0700` data can
+  be read without granting write or broader privilege. Do not use an unguarded
+  `mktemp`: a workspace creation failure must stop the command before any later
+  path is formed.
 - `restore-compose` is staged by default. Its optional database import requires
   an explicit target project and both `--apply --confirm`; it must not deploy
   project files, create or restore volumes, start services, apply PostgreSQL
