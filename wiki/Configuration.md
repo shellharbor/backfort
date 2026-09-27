@@ -178,6 +178,15 @@ The default is `3600`; the allowed range is `1`–`86400`. Choose a value larger
 than the largest expected logical dump, but finite enough that a stuck daemon,
 container client, or database cannot retain Backfort's lock forever.
 
+## Runtime read cache
+
+Backfort treats a configuration file as immutable for one command invocation
+and reuses repeated YAML reads instead of starting `yq` again. For an rclone
+destination it likewise takes one object-name listing per invocation and
+reuses it for repeated existence checks. Start a new Backfort command after
+editing YAML or changing remote objects outside Backfort; each new command
+creates a fresh view.
+
 ## Copy policy
 
 Every destination is attempted independently. `success.min_copies` is the

@@ -69,6 +69,9 @@ jobs:
       - name: Run smoke test
         run: bash tests/smoke.sh
 
+      - name: Run configuration cache test
+        run: bash tests/config-cache.sh
+
       - name: Run shared-destination host scope test
         run: bash tests/host-scope.sh
 

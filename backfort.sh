@@ -75,6 +75,9 @@ declare -a NOTIFY_CHANNEL_SMTP_USERNAME_ENVS=()
 declare -a NOTIFY_CHANNEL_SMTP_PASSWORD_ENVS=()
 declare -A NOTIFY_CHANNEL_TEMPLATES=()
 declare -A NOTIFY_CHANNEL_TEMPLATE_SET=()
+declare -A RCLONE_DESTINATION_OBJECT_LIST=()
+declare -A RCLONE_DESTINATION_OBJECT_LIST_LOADED=()
+declare -A RCLONE_DESTINATION_OBJECT_SET=()
 declare -a PRUNE_DELETED_IDS=()
 PRUNE_FREED_BYTES=0
 
@@ -98,6 +101,8 @@ PROMETHEUS_TEXTFILE_DIRECTORY=""
 JOB_COUNT=0
 DESTINATION_COUNT=0
 WORK_DIRECTORY=""
+CONFIG_CACHE_FILE=""
+CONFIG_CACHE_DIRECTORY=""
 LOCK_FD=""
 POST_HOOK_PENDING=false
 PRE_HOOK_RUNNING=false
@@ -200,6 +205,18 @@ on_exit() {
   fi
 
   cleanup_work_directory
+  if [[ -n ${CONFIG_CACHE_FILE:-} ]]; then
+    case "$CONFIG_CACHE_FILE" in
+      "$CONFIG_CACHE_DIRECTORY"/backfort.config.*)
+        rm -f -- "$CONFIG_CACHE_FILE"
+        ;;
+      *)
+        log error "kind=safety message=refusing-to-remove-unexpected-config-cache"
+        ;;
+    esac
+    CONFIG_CACHE_FILE=""
+    CONFIG_CACHE_DIRECTORY=""
+  fi
   if [[ -n ${QUICK_CONFIG_DIRECTORY:-} ]]; then
     case "$QUICK_CONFIG_DIRECTORY" in
       /tmp/backfort.quick.*)
@@ -244,9 +261,55 @@ check_yq() {
   fi
 }
 
+make_config_cache_file() {
+  local cache_file
+
+  [[ -n $CONFIG_CACHE_FILE ]] && return 0
+  CONFIG_CACHE_DIRECTORY=${TMPDIR:-/tmp}
+  if ! cache_file=$(mktemp "$CONFIG_CACHE_DIRECTORY/backfort.config.XXXXXXXX" 2>/dev/null) \
+    || ! chmod 0600 "$cache_file"; then
+    [[ -z ${cache_file:-} ]] || rm -f -- "$cache_file"
+    CONFIG_CACHE_DIRECTORY=""
+    log warning "kind=performance message=config-cache-unavailable"
+    return 0
+  fi
+  CONFIG_CACHE_FILE=$cache_file
+}
+
 cfg() {
   local expression=$1
-  yq eval -r "$expression" "$CONFIG_FILE"
+  local cached_config cached_expression cached_value value local_status
+
+  # A Backfort invocation treats its YAML plan as immutable. The same values
+  # are read in validation, planning, publishing and retention, so avoid
+  # starting Mike Farah yq again for an identical config/expression pair. A
+  # NUL-delimited cache file also survives the command-substitution subshells
+  # used by existing callers without ever evaluating configuration as shell.
+  if [[ -n $CONFIG_CACHE_FILE && -r $CONFIG_CACHE_FILE ]]; then
+    while IFS= read -r -d '' cached_config \
+      && IFS= read -r -d '' cached_expression \
+      && IFS= read -r -d '' cached_value; do
+      if [[ $cached_config == "$CONFIG_FILE" && $cached_expression == "$expression" ]]; then
+        printf '%s' "$cached_value"
+        return 0
+      fi
+    done <"$CONFIG_CACHE_FILE"
+  fi
+  if value=$(
+    set +e
+    yq eval -r "$expression" "$CONFIG_FILE"
+    local_status=$?
+    printf '\037'
+    exit "$local_status"
+  ); then
+    value=${value%$'\037'}
+  else
+    return 1
+  fi
+  if [[ -n $CONFIG_CACHE_FILE ]]; then
+    printf '%s\0%s\0%s\0' "$CONFIG_FILE" "$expression" "$value" >>"$CONFIG_CACHE_FILE" || true
+  fi
+  printf '%s' "$value"
 }
 
 validate_identifier() {
@@ -3710,10 +3773,38 @@ write_prometheus_metrics() {
   log info "event=prometheus-metrics-written job=$job file=$final"
 }
 
+rclone_destination_object_cache_load() {
+  local destination_index=$1
+  local root listing object cache_key
+
+  if [[ ${RCLONE_DESTINATION_OBJECT_LIST_LOADED["$destination_index"]:-false} == true ]]; then
+    return 0
+  fi
+  require_command rclone
+  root=$(destination_rclone_root "$destination_index")
+  if ! listing=$(rclone lsf --files-only --format p "$root" 2>/dev/null); then
+    return 1
+  fi
+  RCLONE_DESTINATION_OBJECT_LIST["$destination_index"]=$listing
+  while IFS= read -r object; do
+    [[ -n $object ]] || continue
+    cache_key="$destination_index"$'\037'"$object"
+    RCLONE_DESTINATION_OBJECT_SET["$cache_key"]=true
+  done <<<"$listing"
+  RCLONE_DESTINATION_OBJECT_LIST_LOADED["$destination_index"]=true
+}
+
+rclone_destination_object_cache_list() {
+  local destination_index=$1
+
+  rclone_destination_object_cache_load "$destination_index" || return 1
+  printf '%s\n' "${RCLONE_DESTINATION_OBJECT_LIST["$destination_index"]}"
+}
+
 destination_object_exists() {
   local destination_index=$1
   local filename=$2
-  local type object root listed
+  local type object cache_key
 
   type=$(destination_type "$destination_index")
   case "$type" in
@@ -3722,12 +3813,9 @@ destination_object_exists() {
       [[ -f $object && ! -L $object ]]
       ;;
     rclone)
-      require_command rclone
-      root=$(destination_rclone_root "$destination_index")
-      while IFS= read -r listed; do
-        [[ $listed == "$filename" ]] && return 0
-      done < <(rclone lsf --files-only --format p "$root" 2>/dev/null)
-      return 1
+      rclone_destination_object_cache_load "$destination_index" || return 1
+      cache_key="$destination_index"$'\037'"$filename"
+      [[ ${RCLONE_DESTINATION_OBJECT_SET["$cache_key"]:-false} == true ]]
       ;;
     *)
       return 1
@@ -4436,7 +4524,7 @@ iterate_destination_backup_ids() {
             printf '%s\0' "$backup_id"
             ;;
         esac
-      done < <(rclone lsf --files-only --format p "$(destination_rclone_root "$destination_index")" 2>/dev/null)
+      done < <(rclone_destination_object_cache_list "$destination_index")
       ;;
     *) return 1 ;;
   esac | sort -zr
@@ -4464,7 +4552,7 @@ iterate_destination_pinned_ids() {
             printf '%s\0' "$backup_id"
             ;;
         esac
-      done < <(rclone lsf --files-only --format p "$(destination_rclone_root "$destination_index")" 2>/dev/null)
+      done < <(rclone_destination_object_cache_list "$destination_index")
       ;;
     *) return 1 ;;
   esac | sort -zr
@@ -7436,6 +7524,7 @@ main() {
   if [[ $COMMAND == quick || $COMMAND == quick-compose ]]; then
     [[ $CONFIG_FILE_EXPLICIT == false ]] || command_error "$COMMAND-does-not-use-config"
     check_yq
+    make_config_cache_file
     if [[ $COMMAND == quick ]]; then
       quick_command
     else
@@ -7446,6 +7535,7 @@ main() {
 
   validate_absolute_path config "$CONFIG_FILE"
   check_yq
+  make_config_cache_file
   validate_config
 
   case "$COMMAND" in

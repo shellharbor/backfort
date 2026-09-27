@@ -1,5 +1,7 @@
 # Backfort
 
+![Backfort shell bash backup script](https://i.postimg.cc/15hRLgv0/backfort-hero-dark-terminal-alt.jpg)
+
 > **Your last line of data defense.** Back up deliberately. Restore with
 > confidence.
 

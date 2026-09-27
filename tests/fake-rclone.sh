@@ -42,6 +42,9 @@ case "$command_name" in
       esac
     done
     local_path=$(remote_path "$1") || exit 1
+    if [[ -n ${BACKFORT_FAKE_RCLONE_LOG:-} ]]; then
+      printf 'lsf %s\n' "$1" >>"$BACKFORT_FAKE_RCLONE_LOG"
+    fi
     if [[ -d $local_path ]]; then
       if [[ $format == s ]]; then
         find "$local_path" -maxdepth 1 -type f -printf '%s\n' | sort

@@ -110,6 +110,10 @@ ignored workspace state, not a project artifact.
 - rclone publishing uses individual object operations, never a broad `sync`.
   Remote deletion must preserve the commit-marker ordering that prevents a
   partial deletion from appearing recoverable.
+- A command's YAML plan and rclone object index are immutable read snapshots:
+  cache repeated `cfg` and remote existence reads, but start a new command
+  after an out-of-band config or remote change. Do not trade the staged
+  manifest/checksum/verification pipeline for speculative streaming.
 - Notification delivery is non-fatal. Preserve redaction, bounded rendering,
   per-channel antiflood behavior and the fixed template placeholder whitelist.
   Digest webhooks carry their own `digest` context, Telegram retries rejected
@@ -159,7 +163,7 @@ Run the specialized test when its surface changes: `quick.sh`,
 `crypto-smoke.sh`, `gpg-asymmetric.sh`, `file-hashes.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
 `delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, `metrics.sh`,
 `preflight-failure.sh`, `host-scope.sh`, `workspace-failure.sh`,
-`archive-resilience.sh`, `fidelity.sh`, `bash43-runtime.sh`, or
+`archive-resilience.sh`, `fidelity.sh`, `config-cache.sh`, `bash43-runtime.sh`, or
 `local-durability.sh`.
 For release stabilization, also verify direct execution from a clean Linux
 checkout: `backfort.sh` and executable test adapters must retain mode `0755`.

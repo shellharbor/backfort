@@ -62,11 +62,13 @@ EOF
 
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" doctor
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" --dry-run run
+: >"$RCLONE_LOG"
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run
 
 REMOTE_BUNDLE_DIRECTORY="$REMOTE_DIRECTORY/archives/smoke"
 BACKUP_ID=$(basename -- "$(find "$REMOTE_BUNDLE_DIRECTORY" -maxdepth 1 -name '*.complete' -print -quit)" .complete)
 [[ -n $BACKUP_ID ]]
+[[ $(grep -c '^lsf fake:archives/smoke$' "$RCLONE_LOG") -eq 1 ]]
 [[ $(tail -n 1 "$RCLONE_LOG") == "copyto $BACKUP_ID.complete" ]]
 
 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" list --job remote-smoke | grep -q $'remote-smoke\tremote'
