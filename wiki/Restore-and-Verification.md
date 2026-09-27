@@ -70,6 +70,12 @@ a disposable host or an explicit recovery directory first. Never overwrite a
 live deployment until the recovered files, ownership and application start-up
 have been checked.
 
+Backfort restores numeric owners, POSIX ACLs, extended attributes (including
+Linux file capabilities), sparse extents, and timestamps. Use a privileged
+recovery account when owner fidelity is required; an unprivileged account may
+be unable to recreate another UID/GID. The destination must still be new or
+empty—fidelity never authorizes an in-place overwrite.
+
 ## Restore a Compose project
 
 First restore the Compose version. Its contents are organised in familiar

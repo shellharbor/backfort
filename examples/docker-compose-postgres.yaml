@@ -27,6 +27,8 @@ jobs:
       type: docker_compose
       project_dir: /srv/crm
       files: [compose.yaml, compose.production.yaml]
+      # Applies to Docker/Compose calls, including logical DB dumps. Default: 3600.
+      command_timeout_seconds: 3600
 
       # Compose logical volume names. Do not include the PostgreSQL data volume:
       # the logical dump below is the application-consistent database backup.

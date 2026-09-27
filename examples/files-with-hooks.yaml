@@ -27,9 +27,11 @@ jobs:
       pre:
         path: /usr/local/lib/backfort/hooks/crm-maintenance
         args: [enable]
+        timeout_seconds: 120
       post:
         path: /usr/local/lib/backfort/hooks/crm-maintenance
         args: [disable]
+        timeout_seconds: 120
     destinations: [local, offsite]
     success: {min_copies: 2}
     compression: {method: zstd, level: 10}

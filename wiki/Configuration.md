@@ -108,6 +108,15 @@ source:
 Keep `follow_symlinks: false` unless following the target is intentional.
 Following a symlink can include data outside the visible source tree.
 
+Backfort preserves POSIX ACLs, extended attributes, sparse extents, timestamps,
+and numeric ownership in a normal file backup. Run recovery with suitable
+privilege when original owners need to be recreated. A file that changes while
+GNU tar reads it does not discard the whole version; tar reports the live-file
+warning and the manifest records what was actually captured. For a portable,
+safe manifest, FIFO/device entries and names with control characters,
+leading-space components, or invalid UTF-8 are omitted with a structured pack
+warning instead of making every other source file unrecoverable.
+
 ## Lifecycle hooks
 
 Saved jobs can quiesce an application before Backfort begins the archive
@@ -119,9 +128,11 @@ hooks:
   pre:
     path: /usr/local/lib/backfort/hooks/crm-maintenance
     args: [enable]
+    timeout_seconds: 120
   post:
     path: /usr/local/lib/backfort/hooks/crm-maintenance
     args: [disable]
+    timeout_seconds: 120
 ```
 
 The Backfort execution account must own each hook. It must be a regular
@@ -143,6 +154,29 @@ idempotent. A failed post hook makes the Backfort command fail even if the
 payload has already been published. Backfort attempts post cleanup after
 ordinary `INT`/`TERM` during the backup pipeline; `SIGKILL` and power loss
 remain the hook author's recovery responsibility.
+
+`timeout_seconds` is optional per `pre` or `post` hook (default `300`, range
+`1`–`86400`). A timed-out `pre` is a failed pre hook and still triggers the
+post hook; a timed-out post makes the command fail. Keep the post action
+idempotent so it can unfreeze a filesystem safely after a timeout.
+
+## Docker Compose command timeouts
+
+Compose sources can bound all Docker/Compose interactions—preflight calls,
+volume helper, `docker cp`, `docker compose exec`, and database dumps—with one
+source setting:
+
+```yaml
+source:
+  type: docker_compose
+  project_dir: /srv/crm
+  files: [compose.yaml]
+  command_timeout_seconds: 3600
+```
+
+The default is `3600`; the allowed range is `1`–`86400`. Choose a value larger
+than the largest expected logical dump, but finite enough that a stuck daemon,
+container client, or database cannot retain Backfort's lock forever.
 
 ## Copy policy
 

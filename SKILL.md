@@ -23,10 +23,14 @@ product sources:
 - `config.example.yaml` — complete configuration reference;
 - `tests/*.sh` — hermetic executable behavior examples;
 - `examples/` — user-adaptable configuration examples;
+- `.gitattributes` — LF normalization for portable shell, YAML and Markdown;
 - `README.md` and `wiki/` — public operating documentation;
 - `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and `SUPPORT.md` —
   GitHub community, disclosure, and contribution contracts;
 - `PROJECT_CONTEXT.md` and `CHANGELOG.md` — current scope and release notes.
+
+Keep local editor metadata such as `.idea/` outside version control. It is
+ignored workspace state, not a project artifact.
 
 ## Preserve the recovery contract
 
@@ -47,6 +51,13 @@ product sources:
   `verify --full` and normal restore recomputing and comparing those hashes
   before extraction; retain compatibility with legacy manifests that predate
   the explicit `file_hash_algorithm` marker.
+- Preserve recovery fidelity for supported regular files: GNU tar backups and
+  restores carry numeric owners, ACLs, extended attributes and sparse extents.
+  Never reintroduce `--no-same-owner` into a root-capable staged restore. A
+  live file changing during capture may be omitted with GNU tar's documented
+  warning, but must not invalidate the rest of the version. FIFO/device nodes
+  and names unsafe for the portable manifest are intentionally omitted rather
+  than silently restored or allowed to make a whole backup fail.
 - Keep normal restore staged: it requires a new or empty explicit directory.
   Do not introduce in-place restore or a force-overwrite path casually.
 - `success.min_copies` determines success across independent destinations. A
@@ -91,11 +102,19 @@ product sources:
 - Hooks are executable paths with literal argument arrays, never shell command
   strings. Preserve their ownership/mode validation, scrubbed environment, and
   idempotent post-cleanup contract; do not pass Backfort secrets into hooks.
+  Hook `timeout_seconds` is bounded, and a timed-out pre hook must still invoke
+  post cleanup.
+- Compose `command_timeout_seconds` bounds Docker/Compose preflight, helper,
+  copy, exec and dump calls. Do not add an unbounded command path around a
+  database dump or restore import.
 - rclone publishing uses individual object operations, never a broad `sync`.
   Remote deletion must preserve the commit-marker ordering that prevents a
   partial deletion from appearing recoverable.
 - Notification delivery is non-fatal. Preserve redaction, bounded rendering,
   per-channel antiflood behavior and the fixed template placeholder whitelist.
+  Digest webhooks carry their own `digest` context, Telegram retries rejected
+  HTML as plain text once, and authenticated SMTP must use STARTTLS or implicit
+  TLS—never a cleartext-auth fallback.
 - A persistent `run` isolates each selected job's preflight. A preflight error
   must become that job's code-3 result with `stage=preflight`, zero-valued
   Prometheus copy/payload gauges, and the standard failure event while other
@@ -110,10 +129,10 @@ product sources:
 | CLI command or option | parser, `usage`, validation, command implementation, focused `tests/*.sh`, README and Wiki command examples |
 | YAML schema or default | validator, `config.example.yaml`, relevant `examples/*.yaml`, tests, README and Wiki configuration pages |
 | Prometheus metrics | schema and readiness validation, atomic textfile writer, `tests/metrics.sh`, README, `Configuration`, `Monitoring and Metrics`, and troubleshooting Wiki pages |
-| Lifecycle hook | validator and preflight, hook execution and signal cleanup, `tests/hooks.sh`, README, `Configuration`, and `Automation-and-Notifications` Wiki pages |
+| Lifecycle hook or timeout | validator and preflight, hook execution and signal cleanup, `tests/hooks.sh`, README, `Configuration`, and `Automation-and-Notifications` Wiki pages |
 | GitHub automation or badge | `.github/workflows/`, `.github/dependabot.yml`, README badges, `CHANGELOG.md`, and Wiki maintainer guidance; never add a badge without its real workflow or public service |
 | Local/rclone bundle behavior | atomic publish, host-scoped automatic discovery, list/verify/restore/prune/delete behavior, smoke tests, recovery and storage docs |
-| Compose or database adapter | Compose validation, fake Docker test, recovery instructions, `Docker-Compose-and-Databases`, `Compose-Migration`, and `Restore-and-Verification` Wiki pages |
+| Compose or database adapter | Compose validation, fake Docker test, command timeout behavior, recovery instructions, `Docker-Compose-and-Databases`, `Compose-Migration`, and `Restore-and-Verification` Wiki pages |
 | Security, encryption, signing or notifications | validation, negative tests, redaction/log review, README and relevant Wiki safety/automation pages |
 | GitHub community or disclosure policy | `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, README links, and this skill when routing changes |
 
@@ -139,8 +158,9 @@ Run the specialized test when its surface changes: `quick.sh`,
 `rclone-smoke.sh`, `compose-smoke.sh`, `restore-compose.sh`,
 `crypto-smoke.sh`, `gpg-asymmetric.sh`, `file-hashes.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
 `delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, `metrics.sh`,
-`preflight-failure.sh`, `host-scope.sh`, `workspace-failure.sh`, or
-`bash43-runtime.sh`, or `local-durability.sh`.
+`preflight-failure.sh`, `host-scope.sh`, `workspace-failure.sh`,
+`archive-resilience.sh`, `fidelity.sh`, `bash43-runtime.sh`, or
+`local-durability.sh`.
 For release stabilization, also verify direct execution from a clean Linux
 checkout: `backfort.sh` and executable test adapters must retain mode `0755`.
 CI provides Mike Farah `yq` v4, GnuPG, ShellCheck and Python on Ubuntu;

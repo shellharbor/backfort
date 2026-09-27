@@ -7,6 +7,7 @@ PROJECT_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TEST_DIRECTORY=$(mktemp -d)
 PORT=18976
 SERVER_PID=''
+PARSE_ERROR_STATE=''
 
 cleanup() {
   if [[ -n $SERVER_PID ]]; then
@@ -25,10 +26,11 @@ STATE_DIRECTORY="$TEST_DIRECTORY/state"
 TEMP_DIRECTORY="$TEST_DIRECTORY/temp"
 BIN_DIRECTORY="$TEST_DIRECTORY/bin"
 REQUEST_DIRECTORY="$TEST_DIRECTORY/requests"
+SMTP_DIRECTORY="$TEST_DIRECTORY/smtp"
 CONFIG_FILE="$TEST_DIRECTORY/config.yaml"
 REAL_CURL=$(command -v curl)
 
-mkdir -p "$SOURCE_DIRECTORY" "$BACKUP_DIRECTORY" "$STATE_DIRECTORY" "$TEMP_DIRECTORY" "$BIN_DIRECTORY" "$REQUEST_DIRECTORY"
+mkdir -p "$SOURCE_DIRECTORY" "$BACKUP_DIRECTORY" "$STATE_DIRECTORY" "$TEMP_DIRECTORY" "$BIN_DIRECTORY" "$REQUEST_DIRECTORY" "$SMTP_DIRECTORY"
 printf 'notification test content\n' >"$SOURCE_DIRECTORY/data.txt"
 
 cat >"$TEST_DIRECTORY/receiver.py" <<'PY'
@@ -76,10 +78,33 @@ for argument in "$@"; do
 done
 if [[ -n $config ]] && grep -q 'api.telegram.org' "$config"; then
   sed -i "s#^url = .*#url = \"http://127.0.0.1:$BACKFORT_TEST_NOTIFY_PORT/telegram\"#" "$config"
+  if [[ ${BACKFORT_TEST_TELEGRAM_PARSE_ERROR:-} == 1 && ! -e ${BACKFORT_TEST_TELEGRAM_PARSE_STATE:-} ]]; then
+    : >"$BACKFORT_TEST_TELEGRAM_PARSE_STATE"
+    "$BACKFORT_REAL_CURL" "$@" >/dev/null
+    printf '%s' '{"ok":false,"description":"Bad Request: parse entities"}'
+    exit 0
+  fi
 fi
 exec "$BACKFORT_REAL_CURL" "$@"
 EOF
 chmod 0755 "$BIN_DIRECTORY/curl"
+
+cat >"$BIN_DIRECTORY/msmtp" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+configuration=''
+for argument in "$@"; do
+  case "$argument" in
+    --file=*) configuration=${argument#--file=} ;;
+  esac
+done
+[[ -n $configuration && -f $configuration ]] || exit 64
+counter=$(find "$BACKFORT_TEST_SMTP_DIRECTORY" -maxdepth 1 -name '*.eml' | wc -l)
+cp -- "$configuration" "$BACKFORT_TEST_SMTP_DIRECTORY/$((counter + 1)).config"
+cat >"$BACKFORT_TEST_SMTP_DIRECTORY/$((counter + 1)).eml"
+EOF
+chmod 0755 "$BIN_DIRECTORY/msmtp"
 
 export BACKFORT_TEST_NOTIFY_PORT="$PORT"
 export BACKFORT_REAL_CURL="$REAL_CURL"
@@ -87,6 +112,9 @@ export PATH="$BIN_DIRECTORY:$PATH"
 export BACKFORT_TG_TOKEN='123456:telegram_test_token'
 export BACKFORT_TG_CHAT='-100123456'
 export BACKFORT_WEBHOOK_URL="http://127.0.0.1:$PORT/webhook"
+export BACKFORT_TEST_SMTP_DIRECTORY="$SMTP_DIRECTORY"
+PARSE_ERROR_STATE="$TEST_DIRECTORY/telegram-parse-error.once"
+export BACKFORT_TEST_TELEGRAM_PARSE_STATE="$PARSE_ERROR_STATE"
 
 reset_requests() {
   rm -f -- "$REQUEST_DIRECTORY"/*
@@ -98,6 +126,10 @@ request_count() {
 
 latest_body() {
   find "$REQUEST_DIRECTORY" -maxdepth 1 -name '*.body' -print | sort -V | tail -n 1
+}
+
+first_body() {
+  find "$REQUEST_DIRECTORY" -maxdepth 1 -name '*.body' -print | sort -V | head -n 1
 }
 
 telegram_text() {
@@ -278,6 +310,7 @@ BACKFORT_EVENT_JOB=notify BACKFORT_EVENT_STAGE=watchdog \
   "$TEST_DIRECTORY/event-helper.sh" "$PROJECT_DIRECTORY/backfort.sh" "$CONFIG_FILE"
 wait_for_requests 1
 grep -Fq 'daily digest' "$(latest_body)"
+yq eval '.event == "digest" and .data.job == "" and .data.id == "" and .data.error == "" and .data.stage == "digest"' "$(latest_body)" | grep -qx true
 
 # A dead channel and a missing secret warn but do not break a completed backup.
 reset_requests
@@ -368,6 +401,25 @@ grep -Fq "&lt;script&gt;&amp; \$(touch " <<<"$TEMPLATE_TEXT"
 grep -Fq '<code>sudo backfort.sh -c ' <<<"$TEMPLATE_TEXT"
 [[ ! -e $PWN_FILE ]]
 
+# Telegram rejects malformed HTML as a whole message. Backfort retries exactly
+# once as plain text so an alert is not lost because a trusted template tag or
+# an escaped entity is malformed at the transport boundary.
+reset_requests
+rm -rf -- "$STATE_DIRECTORY/notify_state"
+rm -f -- "$PARSE_ERROR_STATE"
+export BACKFORT_TEST_TELEGRAM_PARSE_ERROR=1
+BACKFORT_EVENT_JOB=notify BACKFORT_EVENT_ID='notify-host_notify_20260925T021500Z_a91f3c2d' \
+  BACKFORT_EVENT_ERROR='<broken>&' BACKFORT_EVENT_EXIT_CODE=3 \
+  "$TEST_DIRECTORY/template-helper.sh" "$PROJECT_DIRECTORY/backfort.sh" "$CONFIG_FILE"
+wait_for_requests 2
+yq eval 'has("parse_mode")' "$(first_body)" | grep -qx true
+yq eval 'has("parse_mode")' "$(latest_body)" | grep -qx false
+if grep -Fq '<b>' "$(latest_body)"; then
+  printf 'Telegram plain-text retry retained HTML markup\n' >&2
+  exit 1
+fi
+unset BACKFORT_TEST_TELEGRAM_PARSE_ERROR
+
 # %q keeps the recovery command copy-paste safe even when -c has spaces.
 reset_requests
 rm -rf -- "$STATE_DIRECTORY" "$BACKUP_DIRECTORY"
@@ -445,7 +497,7 @@ initialize_notifications
 bf_notify failure
 EOF
 chmod 0700 "$TEST_DIRECTORY/redact-helper.sh"
-BACKFORT_EVENT_ERROR='TOKEN=abcdef1234567890abcdef1234567890 hex=0123456789abcdef0123456789abcdef' \
+BACKFORT_EVENT_ERROR='path=/srv/backfort/very-long-dir-name-12345/normal-component-name-67890 TOKEN=abcdef1234567890abcdef1234567890 hex=0123456789abcdef0123456789abcdef' \
   BACKFORT_EVENT_JOB=notify BACKFORT_EVENT_STAGE=pack \
   "$TEST_DIRECTORY/redact-helper.sh" "$PROJECT_DIRECTORY/backfort.sh" "$CONFIG_FILE"
 wait_for_requests 1
@@ -454,5 +506,50 @@ if grep -Fq 'abcdef1234567890abcdef1234567890' "$(latest_body)" \
   printf 'notification payload leaked a secret-like value\n' >&2
   exit 1
 fi
+grep -Fq '/srv/backfort/very-long-dir-name-12345/normal-component-name-67890' "$(latest_body)"
+
+# Authenticated SMTP never falls back to clear text. The explicit implicit-TLS
+# mode supports port 465, and emitted messages are complete UTF-8 RFC-style
+# messages rather than a bare Subject/body pair.
+smtp_events='notifications:
+  enabled: true
+  channels:
+    - name: mail-ops
+      type: smtp
+      host: smtp.example.test
+      port: 465
+      tls_mode: implicit
+      username_env: BACKFORT_SMTP_USER
+      password_env: BACKFORT_SMTP_PASSWORD
+      to: [ops@example.test]
+      from: backfort@example.test
+      events: [failure]'
+export BACKFORT_SMTP_USER='backfort-test'
+export BACKFORT_SMTP_PASSWORD='smtp-test-password'
+rm -rf -- "$SMTP_DIRECTORY" "$STATE_DIRECTORY/notify_state"
+mkdir -p "$SMTP_DIRECTORY"
+write_config "$smtp_events"
+BACKFORT_EVENT_JOB=notify BACKFORT_EVENT_ERROR='smtp delivery test' BACKFORT_EVENT_EXIT_CODE=3 \
+  "$TEST_DIRECTORY/template-helper.sh" "$PROJECT_DIRECTORY/backfort.sh" "$CONFIG_FILE"
+grep -qx 'tls on' "$SMTP_DIRECTORY/1.config"
+grep -qx 'tls_starttls off' "$SMTP_DIRECTORY/1.config"
+if grep -qx 'tls off' "$SMTP_DIRECTORY/1.config"; then
+  printf 'SMTP configuration disabled TLS\n' >&2
+  exit 1
+fi
+grep -q '^Date: ' "$SMTP_DIRECTORY/1.eml"
+grep -q '^Message-ID: <backfort\.' "$SMTP_DIRECTORY/1.eml"
+grep -qx 'Content-Type: text/plain; charset=UTF-8' "$SMTP_DIRECTORY/1.eml"
+
+# The old boolean remains compatible only for the safe STARTTLS setting.
+yq eval 'del(.notifications.channels[0].tls_mode) | .notifications.channels[0].starttls = false' -i "$CONFIG_FILE"
+if "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" doctor >"$TEST_DIRECTORY/smtp-plaintext.out" 2>"$TEST_DIRECTORY/smtp-plaintext.err"; then
+  printf 'expected plaintext authenticated SMTP to be rejected\n' >&2
+  exit 1
+else
+  SMTP_PLAINTEXT_STATUS=$?
+fi
+[[ $SMTP_PLAINTEXT_STATUS -eq 2 ]]
+grep -q 'smtp-plaintext-auth-forbidden' "$TEST_DIRECTORY/smtp-plaintext.err"
 
 printf 'Backfort notification test passed.\n'

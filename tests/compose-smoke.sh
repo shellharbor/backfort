@@ -148,6 +148,20 @@ if find "$FAKE_DOCKER_ROOT/containers/fake-oracle/opt/oracle/admin/FREE/dpdump" 
   exit 1
 fi
 
+# Compose commands, including logical dumps, are bounded by the source-level
+# timeout instead of retaining the global lock indefinitely.
+yq eval '.jobs[0].source.command_timeout_seconds = 1' -i "$CONFIG_FILE"
+if BACKFORT_FAKE_DOCKER_EXEC_SLEEP=3 "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run \
+  >"$TEST_DIRECTORY/timeout.out" 2>"$TEST_DIRECTORY/timeout.err"; then
+  printf 'expected a timed-out database dump to fail the job\n' >&2
+  exit 1
+else
+  COMPOSE_TIMEOUT_STATUS=$?
+fi
+[[ $COMPOSE_TIMEOUT_STATUS -eq 3 ]]
+grep -q 'kind=compose-exec' "$TEST_DIRECTORY/timeout.err"
+grep -q 'timeout_seconds=1 message=timed-out' "$TEST_DIRECTORY/timeout.err"
+
 QUICK_BACKUP_DIRECTORY="$TEST_DIRECTORY/quick-backups"
 QUICK_RESTORE_DIRECTORY="$TEST_DIRECTORY/quick-restore"
 QUICK_MANAGED_RESTORE_DIRECTORY="$TEST_DIRECTORY/quick-managed-restore"

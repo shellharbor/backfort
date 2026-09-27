@@ -70,7 +70,7 @@ declare -a NOTIFY_CHANNEL_SMTP_TO=()
 declare -a NOTIFY_CHANNEL_SMTP_FROM=()
 declare -a NOTIFY_CHANNEL_SMTP_HOSTS=()
 declare -a NOTIFY_CHANNEL_SMTP_PORTS=()
-declare -a NOTIFY_CHANNEL_SMTP_STARTTLS=()
+declare -a NOTIFY_CHANNEL_SMTP_TLS_MODES=()
 declare -a NOTIFY_CHANNEL_SMTP_USERNAME_ENVS=()
 declare -a NOTIFY_CHANNEL_SMTP_PASSWORD_ENVS=()
 declare -A NOTIFY_CHANNEL_TEMPLATES=()
@@ -281,6 +281,21 @@ validate_integer() {
   fi
 }
 
+validate_timeout_seconds() {
+  local kind=$1
+  local value=$2
+  local leading_zeroes normalized
+
+  validate_integer "$kind" "$value"
+  leading_zeroes=${value%%[!0]*}
+  normalized=${value#"$leading_zeroes"}
+  [[ -n $normalized ]] || normalized=0
+  if [[ $normalized == 0 || ${#normalized} -gt 5 ]] \
+    || { [[ ${#normalized} == 5 ]] && ((10#$normalized > 86400)); }; then
+    config_error "timeout-seconds-out-of-range field=$kind min=1 max=86400"
+  fi
+}
+
 normalize_watchdog_max_age() {
   local value=$1
   local leading_zeroes normalized
@@ -483,11 +498,11 @@ validate_job_hook() {
   local job_name=$2
   local phase=$3
   local hook_path=".jobs[$job_index].hooks.$phase"
-  local script argument_count argument_index argument
+  local script argument_count argument_index argument timeout_seconds
 
   [[ $(cfg "$hook_path | type") == '!!map' ]] \
     || config_error "hook-must-be-map job=$job_name phase=$phase"
-  validate_keys "$hook_path" 'path args'
+  validate_keys "$hook_path" 'path args timeout_seconds'
   [[ $(cfg "$hook_path.path | type") == '!!str' ]] \
     || config_error "hook-path-must-be-string job=$job_name phase=$phase"
   script=$(cfg "$hook_path.path // \"\"")
@@ -505,6 +520,12 @@ validate_job_hook() {
       config_error "newline-in-hook-argument job=$job_name phase=$phase index=$argument_index"
     fi
   done
+  if [[ $(cfg "$hook_path | has(\"timeout_seconds\")") == true ]]; then
+    [[ $(cfg "$hook_path.timeout_seconds | type") == '!!int' ]] \
+      || config_error "hook-timeout-must-be-integer job=$job_name phase=$phase"
+    timeout_seconds=$(cfg "$hook_path.timeout_seconds")
+    validate_timeout_seconds "jobs[$job_index].hooks.$phase.timeout_seconds" "$timeout_seconds"
+  fi
 }
 
 validate_job_hooks() {
@@ -657,11 +678,17 @@ validate_docker_compose_source() {
   local job_name=$2
   local source_path=".jobs[$job_index].source"
   local project_dir files_count file_index file volumes_count volume_index volume other_volume helper_image
-  local bind_count bind_index bind_path bind_name bind_source other_bind
+  local bind_count bind_index bind_path bind_name bind_source other_bind timeout_seconds
 
-  validate_keys "$source_path" 'type project_dir files volumes bind_mounts databases volume_helper_image'
+  validate_keys "$source_path" 'type project_dir files volumes bind_mounts databases volume_helper_image command_timeout_seconds'
   project_dir=$(cfg "$source_path.project_dir // \"\"")
   validate_absolute_path "jobs[$job_index].source.project_dir" "$project_dir"
+  if [[ $(cfg "$source_path | has(\"command_timeout_seconds\")") == true ]]; then
+    [[ $(cfg "$source_path.command_timeout_seconds | type") == '!!int' ]] \
+      || config_error "compose-command-timeout-must-be-integer job=$job_name"
+    timeout_seconds=$(cfg "$source_path.command_timeout_seconds")
+    validate_timeout_seconds "jobs[$job_index].source.command_timeout_seconds" "$timeout_seconds"
+  fi
 
   [[ $(cfg "$source_path.files | type") == '!!seq' ]] || config_error "compose-files-must-be-array job=$job_name"
   files_count=$(cfg "$source_path.files | length")
@@ -712,7 +739,7 @@ validate_notification_event() {
   local event=$1
 
   case "$event" in
-    success|partial|failure|recovery|watchdog|restore_success|restore_failure|prune|drill_failure) : ;;
+    success|partial|failure|recovery|watchdog|restore_success|restore_failure|prune|digest|drill_failure) : ;;
     *) config_error "unsupported-notification-event event=$event" ;;
   esac
 }
@@ -814,7 +841,7 @@ validate_email_address() {
 
 validate_notifications_config() {
   local enabled channels_count channel_index channel_path channel_name channel_type
-  local other_index other_name env_name server priority host port starttls recipient_count recipient_index recipient
+  local other_index other_name env_name server priority host port starttls tls_mode recipient_count recipient_index recipient
 
   [[ $(cfg '.notifications | type') == '!!map' ]] || config_error "notifications-must-be-map"
   validate_keys '.notifications' 'enabled defaults channels'
@@ -890,17 +917,31 @@ validate_notifications_config() {
         [[ -z $env_name ]] || validate_env_name "notifications.channels[$channel_index].headers_env" "$env_name"
         ;;
       smtp)
-        validate_keys "$channel_path" 'name type host port starttls username_env password_env to from events templates'
+        validate_keys "$channel_path" 'name type host port starttls tls_mode username_env password_env to from events templates'
         host=$(cfg "$channel_path.host // \"\"")
         [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]] \
           || config_error "invalid-smtp-host channel=$channel_name"
         port=$(cfg "$channel_path.port // \"\"")
         validate_integer "notifications.channels[$channel_index].port" "$port"
         ((port > 0 && port <= 65535)) || config_error "smtp-port-out-of-range channel=$channel_name"
-        [[ $(cfg "$channel_path.starttls | type") == '!!bool' ]] \
-          || config_error "smtp-starttls-must-be-boolean channel=$channel_name"
-        starttls=$(cfg "$channel_path.starttls // false")
-        validate_boolean "notifications.channels[$channel_index].starttls" "$starttls"
+        if [[ $(cfg "$channel_path | has(\"tls_mode\")") == true ]]; then
+          [[ $(cfg "$channel_path.tls_mode | type") == '!!str' ]] \
+            || config_error "smtp-tls-mode-must-be-string channel=$channel_name"
+          tls_mode=$(cfg "$channel_path.tls_mode")
+          case "$tls_mode" in
+            starttls|implicit) : ;;
+            *) config_error "unsupported-smtp-tls-mode channel=$channel_name" ;;
+          esac
+          [[ $(cfg "$channel_path | has(\"starttls\")") == false ]] \
+            || config_error "smtp-tls-mode-conflicts-with-starttls channel=$channel_name"
+        else
+          [[ $(cfg "$channel_path.starttls | type") == '!!bool' ]] \
+            || config_error "smtp-starttls-must-be-boolean channel=$channel_name"
+          starttls=$(cfg "$channel_path.starttls")
+          validate_boolean "notifications.channels[$channel_index].starttls" "$starttls"
+          [[ $starttls == true ]] \
+            || config_error "smtp-plaintext-auth-forbidden channel=$channel_name use=tls_mode-implicit-or-starttls-true"
+        fi
         env_name=$(cfg "$channel_path.username_env // \"\"")
         validate_env_name "notifications.channels[$channel_index].username_env" "$env_name"
         env_name=$(cfg "$channel_path.password_env // \"\"")
@@ -1286,9 +1327,15 @@ path_is_within() {
   [[ "$child/" == "$parent/"* ]]
 }
 
-docker_compose_job() {
+compose_command_timeout_seconds() {
   local job_index=$1
-  shift
+  cfg ".jobs[$job_index].source.command_timeout_seconds // 3600"
+}
+
+docker_compose_job_with_timeout() {
+  local job_index=$1
+  local timeout_seconds=$2
+  shift 2
   local project_dir files_count file_index file
   local -a compose_arguments=(compose)
 
@@ -1299,13 +1346,23 @@ docker_compose_job() {
     file=$(cfg ".jobs[$job_index].source.files[$file_index]")
     compose_arguments+=(-f "$project_dir/$file")
   done
-  docker "${compose_arguments[@]+"${compose_arguments[@]}"}" "$@"
+  timeout -k 30 "$timeout_seconds" docker "${compose_arguments[@]+"${compose_arguments[@]}"}" "$@"
 }
 
-docker_compose_target_project() {
+docker_job_with_timeout() {
   local job_index=$1
-  local project_dir=$2
-  shift 2
+  shift
+  local timeout_seconds
+
+  timeout_seconds=$(compose_command_timeout_seconds "$job_index")
+  timeout -k 30 "$timeout_seconds" docker "$@"
+}
+
+docker_compose_target_project_with_timeout() {
+  local job_index=$1
+  local timeout_seconds=$2
+  local project_dir=$3
+  shift 3
   local files_count file_index file
   local -a compose_arguments=(compose --project-directory "$project_dir")
 
@@ -1314,7 +1371,7 @@ docker_compose_target_project() {
     file=$(cfg ".jobs[$job_index].source.files[$file_index]")
     compose_arguments+=(-f "$project_dir/$file")
   done
-  docker "${compose_arguments[@]+"${compose_arguments[@]}"}" "$@"
+  timeout -k 30 "$timeout_seconds" docker "${compose_arguments[@]+"${compose_arguments[@]}"}" "$@"
 }
 
 compose_volume_name() {
@@ -1322,7 +1379,7 @@ compose_volume_name() {
   local logical_name=$2
   local resolved_name
 
-  if ! resolved_name=$(docker_compose_job "$job_index" config --format json \
+  if ! resolved_name=$(docker_compose_job_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" config --format json \
     | BF_COMPOSE_VOLUME="$logical_name" yq eval -r '.volumes[strenv(BF_COMPOSE_VOLUME)].name // strenv(BF_COMPOSE_VOLUME)' -); then
     return 1
   fi
@@ -1390,11 +1447,11 @@ preflight_docker_compose_source() {
       || config_error "compose-file-outside-project job=$name file=$file"
   done
 
-  if ! docker_compose_job "$index" version >/dev/null \
-    || ! docker_compose_job "$index" config --quiet >/dev/null; then
+  if ! docker_compose_job_with_timeout "$index" "$(compose_command_timeout_seconds "$index")" version >/dev/null \
+    || ! docker_compose_job_with_timeout "$index" "$(compose_command_timeout_seconds "$index")" config --quiet >/dev/null; then
     config_error "compose-project-invalid-or-unavailable job=$name"
   fi
-  services=$(docker_compose_job "$index" config --services) \
+  services=$(docker_compose_job_with_timeout "$index" "$(compose_command_timeout_seconds "$index")" config --services) \
     || config_error "compose-services-unavailable job=$name"
 
   bind_count=$(cfg ".jobs[$index].source.bind_mounts // [] | length")
@@ -1412,13 +1469,13 @@ preflight_docker_compose_source() {
   volume_count=$(cfg ".jobs[$index].source.volumes // [] | length")
   if ((volume_count > 0)); then
     helper_image=$(cfg ".jobs[$index].source.volume_helper_image")
-    docker image inspect "$helper_image" >/dev/null 2>&1 \
+    docker_job_with_timeout "$index" image inspect "$helper_image" >/dev/null 2>&1 \
       || config_error "compose-volume-helper-image-not-present job=$name image=$helper_image"
     for ((volume_index = 0; volume_index < volume_count; volume_index++)); do
       logical_volume=$(cfg ".jobs[$index].source.volumes[$volume_index]")
       docker_volume=$(compose_volume_name "$index" "$logical_volume") \
         || config_error "compose-volume-resolution-failed job=$name volume=$logical_volume"
-      docker volume inspect "$docker_volume" >/dev/null 2>&1 \
+      docker_job_with_timeout "$index" volume inspect "$docker_volume" >/dev/null 2>&1 \
         || config_error "compose-volume-not-present job=$name volume=$logical_volume"
     done
   fi
@@ -1473,6 +1530,7 @@ preflight_job() {
   require_command cat
   require_command chmod
   require_command cp
+  require_command iconv
   require_command dirname
   require_command env
   require_command flock
@@ -1553,9 +1611,15 @@ preflight_job() {
   source_type=$(cfg ".jobs[$index].source.type")
   case "$source_type" in
     files) preflight_files_source "$index" "$name" "$destination_count" ;;
-    docker_compose) preflight_docker_compose_source "$index" "$name" ;;
+    docker_compose)
+      require_command timeout
+      preflight_docker_compose_source "$index" "$name"
+      ;;
     *) config_error "unsupported-source-type job=$name type=$source_type" ;;
   esac
+  if job_hook_configured "$index" pre || job_hook_configured "$index" post; then
+    require_command timeout
+  fi
   preflight_job_hooks "$index" "$name"
 
   local existing
@@ -1646,7 +1710,7 @@ bf_redact() {
   if ! redacted=$(printf '%s' "$value" | sed -E \
     -e 's/([A-Za-z_][A-Za-z0-9_]*(KEY|TOKEN|PASSWORD|SECRET)[A-Za-z0-9_]*=)[^[:space:]]+/\1***/g' \
     -e 's/[A-Fa-f0-9]{24,}/***/g' \
-    -e 's/[A-Za-z0-9+/_-]{32,}={0,2}/***/g'); then
+    -e 's/[A-Za-z0-9+_-]{32,}={0,2}/***/g'); then
     redacted='***'
   fi
   for ((index = 0; index < ${#preserved_backup_ids[@]}; index++)); do
@@ -1697,7 +1761,7 @@ initialize_notifications() {
   NOTIFY_CHANNEL_SMTP_FROM=()
   NOTIFY_CHANNEL_SMTP_HOSTS=()
   NOTIFY_CHANNEL_SMTP_PORTS=()
-  NOTIFY_CHANNEL_SMTP_STARTTLS=()
+  NOTIFY_CHANNEL_SMTP_TLS_MODES=()
   NOTIFY_CHANNEL_SMTP_USERNAME_ENVS=()
   NOTIFY_CHANNEL_SMTP_PASSWORD_ENVS=()
   NOTIFY_CHANNEL_TEMPLATES=()
@@ -1740,7 +1804,11 @@ initialize_notifications() {
     NOTIFY_CHANNEL_SMTP_FROM[index]=$(cfg "$path.from // \"\"")
     NOTIFY_CHANNEL_SMTP_HOSTS[index]=$(cfg "$path.host // \"\"")
     NOTIFY_CHANNEL_SMTP_PORTS[index]=$(cfg "$path.port // \"\"")
-    NOTIFY_CHANNEL_SMTP_STARTTLS[index]=$(cfg "$path.starttls // false")
+    if [[ $(cfg "$path | has(\"tls_mode\")") == true ]]; then
+      NOTIFY_CHANNEL_SMTP_TLS_MODES[index]=$(cfg "$path.tls_mode")
+    else
+      NOTIFY_CHANNEL_SMTP_TLS_MODES[index]=starttls
+    fi
     NOTIFY_CHANNEL_SMTP_USERNAME_ENVS[index]=$(cfg "$path.username_env // \"\"")
     NOTIFY_CHANNEL_SMTP_PASSWORD_ENVS[index]=$(cfg "$path.password_env // \"\"")
     if [[ $(cfg "$path | has(\"templates\")") == true ]]; then
@@ -1890,6 +1958,7 @@ notification_default_template() {
     restore_success) printf '%s\n' "$NOTIFY_TEMPLATE_RESTORE_SUCCESS" ;;
     restore_failure) printf '%s\n' "$NOTIFY_TEMPLATE_RESTORE_FAILURE" ;;
     prune) printf '%s\n' "$NOTIFY_TEMPLATE_PRUNE" ;;
+    digest) printf '[backfort] daily digest host={{host}} {{extra}}\n' ;;
     *) printf '[backfort] {{event}} host={{host}}\n' ;;
   esac
 }
@@ -2038,6 +2107,33 @@ notification_utf8_prefix() {
   printf '%s\n' "$output"
 }
 
+notification_telegram_html_prefix() {
+  local value=$1
+  local maximum=$2
+  local output suffix
+
+  output=$(notification_utf8_prefix "$value" "$maximum")
+  # A cut in the middle of an escaped substitution such as &amp; makes the
+  # Telegram HTML parser reject the whole alert. Drop only an unfinished
+  # trailing entity; a parse-mode-free retry below still covers malformed
+  # trusted template markup.
+  if [[ $output == *'&'* ]]; then
+    suffix=${output##*&}
+    [[ $suffix == *';'* ]] || output=${output%&"$suffix"}
+  fi
+  printf '%s\n' "$output"
+}
+
+notification_plain_text() {
+  local value=$1
+
+  value=$(printf '%s' "$value" | sed -E 's/<[^>]*>//g')
+  value=${value//&amp;/&}
+  value=${value//&lt;/<}
+  value=${value//&gt;/>}
+  printf '%s\n' "$value"
+}
+
 notification_normalize_message() {
   local value=$1
   local channel_type=$2
@@ -2062,17 +2158,29 @@ notification_normalize_message() {
       output+=$'\n'
     fi
     if ((${#line} > 400)); then
-      line="$(notification_utf8_prefix "$line" 397)..."
+      if [[ $channel_type == telegram ]]; then
+        line="$(notification_telegram_html_prefix "$line" 397)..."
+      else
+        line="$(notification_utf8_prefix "$line" 397)..."
+      fi
       truncated=true
     fi
     output+=$line
     lines=$((lines + 1))
   done
   if ((${#output} > maximum)); then
-    output="$(notification_utf8_prefix "$output" "$((maximum - 3))")..."
+    if [[ $channel_type == telegram ]]; then
+      output="$(notification_telegram_html_prefix "$output" "$((maximum - 3))")..."
+    else
+      output="$(notification_utf8_prefix "$output" "$((maximum - 3))")..."
+    fi
   elif [[ $truncated == true && $output != *... ]]; then
     if ((${#output} > maximum - 3)); then
-      output=$(notification_utf8_prefix "$output" "$((maximum - 3))")
+      if [[ $channel_type == telegram ]]; then
+        output=$(notification_telegram_html_prefix "$output" "$((maximum - 3))")
+      else
+        output=$(notification_utf8_prefix "$output" "$((maximum - 3))")
+      fi
     fi
     output+='...'
   fi
@@ -2214,10 +2322,25 @@ notification_html_escape() {
   printf '%s' "$value" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
+notification_telegram_body() {
+  local chat=$1
+  local message=$2
+  local thread=$3
+  local html=$4
+
+  if [[ $html == true ]]; then
+    BF_NOTIFY_CHAT="$chat" BF_NOTIFY_TEXT="$message" BF_NOTIFY_THREAD="$thread" \
+      yq eval -n -o=json '{"chat_id": strenv(BF_NOTIFY_CHAT), "text": strenv(BF_NOTIFY_TEXT), "parse_mode": "HTML"} + ({"message_thread_id": strenv(BF_NOTIFY_THREAD)} | with_entries(select(.value != "")))'
+  else
+    BF_NOTIFY_CHAT="$chat" BF_NOTIFY_TEXT="$message" BF_NOTIFY_THREAD="$thread" \
+      yq eval -n -o=json '{"chat_id": strenv(BF_NOTIFY_CHAT), "text": strenv(BF_NOTIFY_TEXT)} + ({"message_thread_id": strenv(BF_NOTIFY_THREAD)} | with_entries(select(.value != "")))'
+  fi
+}
+
 notification_send_telegram() {
   local index=$1
   local message=$2
-  local channel token_env chat_env thread_env token chat thread body url
+  local channel token_env chat_env thread_env token chat thread body url plain_message
 
   channel=${NOTIFY_CHANNEL_NAMES[index]}
   token_env=${NOTIFY_CHANNEL_TOKEN_ENVS[index]}
@@ -2236,8 +2359,7 @@ notification_send_telegram() {
     notify_warning "$channel" 'skipped-invalid-telegram-env-value'
     return 2
   fi
-  if ! body=$(BF_NOTIFY_CHAT="$chat" BF_NOTIFY_TEXT="$message" BF_NOTIFY_THREAD="$thread" \
-    yq eval -n -o=json '{"chat_id": strenv(BF_NOTIFY_CHAT), "text": strenv(BF_NOTIFY_TEXT), "parse_mode": "HTML"} + ({"message_thread_id": strenv(BF_NOTIFY_THREAD)} | with_entries(select(.value != "")))'); then
+  if ! body=$(notification_telegram_body "$chat" "$message" "$thread" true); then
     return 1
   fi
   notification_make_body_file "$body" || return 1
@@ -2252,7 +2374,21 @@ notification_send_telegram() {
   fi
   rm -f -- "$NOTIFY_BODY_FILE"
   if [[ $NOTIFY_CURL_RESPONSE =~ \"ok\"[[:space:]]*:[[:space:]]*false ]]; then
-    return 1
+    plain_message=$(notification_plain_text "$message")
+    plain_message=$(notification_normalize_message "$plain_message" telegram)
+    if ! body=$(notification_telegram_body "$chat" "$plain_message" "$thread" false) \
+      || ! notification_make_body_file "$body"; then
+      return 1
+    fi
+    if notification_curl_post "$url"; then
+      :
+    else
+      local result=$?
+      rm -f -- "$NOTIFY_BODY_FILE"
+      return "$result"
+    fi
+    rm -f -- "$NOTIFY_BODY_FILE"
+    [[ $NOTIFY_CURL_RESPONSE =~ \"ok\"[[:space:]]*:[[:space:]]*false ]] && return 1
   fi
   return 0
 }
@@ -2339,14 +2475,14 @@ notification_send_smtp() {
   local index=$1
   local event=$2
   local message=$3
-  local channel to from host port starttls username_env password_env username password configuration tls tls_starttls
+  local channel to from host port tls_mode username_env password_env username password configuration tls_starttls headers
 
   channel=${NOTIFY_CHANNEL_NAMES[index]}
   to=${NOTIFY_CHANNEL_SMTP_TO[index]}
   from=${NOTIFY_CHANNEL_SMTP_FROM[index]}
   host=${NOTIFY_CHANNEL_SMTP_HOSTS[index]}
   port=${NOTIFY_CHANNEL_SMTP_PORTS[index]}
-  starttls=${NOTIFY_CHANNEL_SMTP_STARTTLS[index]}
+  tls_mode=${NOTIFY_CHANNEL_SMTP_TLS_MODES[index]}
   username_env=${NOTIFY_CHANNEL_SMTP_USERNAME_ENVS[index]}
   password_env=${NOTIFY_CHANNEL_SMTP_PASSWORD_ENVS[index]}
   username=${!username_env-}
@@ -2363,30 +2499,30 @@ notification_send_smtp() {
     notify_warning "$channel" 'skipped-invalid-smtp-env-value'
     return 2
   fi
+  headers=$(printf 'To: %s\nFrom: %s\nSubject: [backfort] %s\nDate: %s\nMessage-ID: <backfort.%s.%s.%s@localhost>\nContent-Type: text/plain; charset=UTF-8\nContent-Transfer-Encoding: 8bit' \
+    "$to" "$from" "$event" "$(LC_ALL=C TZ=UTC date -R)" "$HOST_ID" "$(date -u +%s)" "$RANDOM")
   if command -v msmtp >/dev/null 2>&1; then
     if ! configuration=$(mktemp "$TEMP_DIRECTORY/backfort.notify.msmtp.XXXXXXXX"); then
       return 1
     fi
-    if [[ $starttls == true ]]; then
-      tls=on
-      tls_starttls=on
-    else
-      tls=off
-      tls_starttls=off
-    fi
-    if ! printf 'defaults\nauth on\nhost %s\nport %s\ntls %s\ntls_starttls %s\nuser %s\npassword %s\nfrom %s\n' \
-      "$host" "$port" "$tls" "$tls_starttls" "$username" "$password" "$from" \
+    case "$tls_mode" in
+      starttls) tls_starttls=on ;;
+      implicit) tls_starttls=off ;;
+      *) return 1 ;;
+    esac
+    if ! printf 'defaults\nauth on\nhost %s\nport %s\ntls on\ntls_starttls %s\nuser %s\npassword %s\nfrom %s\n' \
+      "$host" "$port" "$tls_starttls" "$username" "$password" "$from" \
       >"$configuration" || ! chmod 0600 "$configuration"; then
       rm -f -- "$configuration"
       return 1
     fi
-    if ! printf 'To: %s\nFrom: %s\nSubject: [backfort] %s\n\n%s\n' "$to" "$from" "$event" "$message" \
+    if ! printf '%s\n\n%s\n' "$headers" "$message" \
       | msmtp --file="$configuration" --read-recipients; then
       rm -f -- "$configuration"
       return 1
     fi
     rm -f -- "$configuration"
-  elif ! printf 'To: %s\nFrom: %s\nSubject: [backfort] %s\n\n%s\n' "$to" "$from" "$event" "$message" \
+  elif ! printf '%s\n\n%s\n' "$headers" "$message" \
     | sendmail -t; then
       return 1
   fi
@@ -2436,14 +2572,41 @@ notification_deliver_digest() {
   local day=$1
   local contents=$2
   local message channel channel_message index send_result delivered=false original_extra
+  local original_job original_id original_size original_duration original_destinations original_failed_destinations
+  local original_age original_threshold original_stage original_target original_error original_exit_code
 
   message="[backfort] daily digest host=$HOST_ID date=$day${contents:+ $contents}"
+  original_job=${BACKFORT_EVENT_JOB:-}
+  original_id=${BACKFORT_EVENT_ID:-}
+  original_size=${BACKFORT_EVENT_SIZE:-}
+  original_duration=${BACKFORT_EVENT_DURATION:-}
+  original_destinations=${BACKFORT_EVENT_DESTINATIONS:-}
+  original_failed_destinations=${BACKFORT_EVENT_FAILED_DESTINATIONS:-}
+  original_age=${BACKFORT_EVENT_AGE:-}
+  original_threshold=${BACKFORT_EVENT_THRESHOLD:-}
+  original_stage=${BACKFORT_EVENT_STAGE:-}
+  original_target=${BACKFORT_EVENT_TARGET:-}
+  original_error=${BACKFORT_EVENT_ERROR:-}
+  original_exit_code=${BACKFORT_EVENT_EXIT_CODE:-}
   original_extra=${BACKFORT_EVENT_EXTRA:-}
+  BACKFORT_EVENT_JOB=''
+  BACKFORT_EVENT_ID=''
+  BACKFORT_EVENT_SIZE=''
+  BACKFORT_EVENT_DURATION=''
+  BACKFORT_EVENT_DESTINATIONS=''
+  BACKFORT_EVENT_FAILED_DESTINATIONS=''
+  BACKFORT_EVENT_AGE=''
+  BACKFORT_EVENT_THRESHOLD=''
+  BACKFORT_EVENT_STAGE='digest'
+  BACKFORT_EVENT_TARGET=''
+  BACKFORT_EVENT_ERROR=''
+  BACKFORT_EVENT_EXIT_CODE=0
   BACKFORT_EVENT_EXTRA=$message
   for ((index = 0; index < NOTIFY_CHANNEL_COUNT; index++)); do
     channel=${NOTIFY_CHANNEL_NAMES[index]}
     if ! notification_event_enabled success "${NOTIFY_CHANNEL_EVENTS[index]}" \
-      && ! notification_event_enabled prune "${NOTIFY_CHANNEL_EVENTS[index]}"; then
+      && ! notification_event_enabled prune "${NOTIFY_CHANNEL_EVENTS[index]}" \
+      && ! notification_event_enabled digest "${NOTIFY_CHANNEL_EVENTS[index]}"; then
       continue
     fi
     channel_message=$message
@@ -2451,7 +2614,7 @@ notification_deliver_digest() {
       channel_message=$(notification_html_escape "$channel_message")
     fi
     channel_message=$(notification_normalize_message "$channel_message" "${NOTIFY_CHANNEL_TYPES[index]}")
-    if notification_send_channel "$index" success "$channel_message"; then
+    if notification_send_channel "$index" digest "$channel_message"; then
       send_result=0
     else
       send_result=$?
@@ -2464,6 +2627,18 @@ notification_deliver_digest() {
       *) notify_warning "$channel" 'digest-delivery-failed' ;;
     esac
   done
+  BACKFORT_EVENT_JOB=$original_job
+  BACKFORT_EVENT_ID=$original_id
+  BACKFORT_EVENT_SIZE=$original_size
+  BACKFORT_EVENT_DURATION=$original_duration
+  BACKFORT_EVENT_DESTINATIONS=$original_destinations
+  BACKFORT_EVENT_FAILED_DESTINATIONS=$original_failed_destinations
+  BACKFORT_EVENT_AGE=$original_age
+  BACKFORT_EVENT_THRESHOLD=$original_threshold
+  BACKFORT_EVENT_STAGE=$original_stage
+  BACKFORT_EVENT_TARGET=$original_target
+  BACKFORT_EVENT_ERROR=$original_error
+  BACKFORT_EVENT_EXIT_CODE=$original_exit_code
   BACKFORT_EVENT_EXTRA=$original_extra
   [[ $delivered == true ]]
 }
@@ -2739,21 +2914,25 @@ compose_exec_with_secret() {
   local container_variable=$3
   local service=$4
   shift 4
-  local password_env secret result
+  local password_env secret result timeout_seconds
 
   password_env=$(cfg ".jobs[$job_index].source.databases[$database_index].password_env")
   secret=${!password_env-}
   [[ -n $secret ]] || config_error "missing-environment-variable job=$(cfg ".jobs[$job_index].name") variable=$password_env"
+  timeout_seconds=$(compose_command_timeout_seconds "$job_index")
 
   if (
     export "$container_variable=$secret"
-    docker_compose_job "$job_index" exec -T -e "$container_variable" "$service" "$@"
+    docker_compose_job_with_timeout "$job_index" "$timeout_seconds" exec -T -e "$container_variable" "$service" "$@"
   ); then
     result=0
   else
     result=$?
   fi
   secret=""
+  if [[ $result == 124 ]]; then
+    log error "kind=compose-exec job=$(cfg ".jobs[$job_index].name") service=$service timeout_seconds=$timeout_seconds message=timed-out"
+  fi
   return "$result"
 }
 
@@ -2764,21 +2943,25 @@ compose_target_exec_with_secret() {
   local container_variable=$4
   local service=$5
   shift 5
-  local password_env secret result
+  local password_env secret result timeout_seconds
 
   password_env=$(cfg ".jobs[$job_index].source.databases[$database_index].password_env")
   secret=${!password_env-}
   [[ -n $secret ]] || config_error "missing-environment-variable job=$(cfg ".jobs[$job_index].name") variable=$password_env"
+  timeout_seconds=$(compose_command_timeout_seconds "$job_index")
 
   if (
     export "$container_variable=$secret"
-    docker_compose_target_project "$job_index" "$project_dir" exec -T -e "$container_variable" "$service" "$@"
+    docker_compose_target_project_with_timeout "$job_index" "$timeout_seconds" "$project_dir" exec -T -e "$container_variable" "$service" "$@"
   ); then
     result=0
   else
     result=$?
   fi
   secret=""
+  if [[ $result == 124 ]]; then
+    log error "kind=compose-restore job=$(cfg ".jobs[$job_index].name") service=$service timeout_seconds=$timeout_seconds message=timed-out"
+  fi
   return "$result"
 }
 
@@ -2786,7 +2969,7 @@ compose_container_id() {
   local job_index=$1
   local service=$2
   local container_id
-  container_id=$(docker_compose_job "$job_index" ps -q "$service") || return 1
+  container_id=$(docker_compose_job_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" ps -q "$service") || return 1
   validate_identifier compose_container "$container_id"
   printf '%s\n' "$container_id"
 }
@@ -2795,7 +2978,7 @@ cleanup_compose_container_files() {
   local job_index=$1
   local service=$2
   shift 2
-  if ! docker_compose_job "$job_index" exec -T "$service" rm -f -- "$@" >/dev/null 2>&1; then
+  if ! docker_compose_job_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" exec -T "$service" rm -f -- "$@" >/dev/null 2>&1; then
     log warning "kind=compose-cleanup job=$(cfg ".jobs[$job_index].name") service=$service message=temporary-dump-cleanup-failed"
   fi
 }
@@ -2901,7 +3084,7 @@ snapshot_mssql_database() {
       return 3
     }
     output="$snapshot_directory/$database_name.bak"
-    if ! docker cp "$container_id:$container_path" "$output"; then
+    if ! docker_job_with_timeout "$job_index" cp "$container_id:$container_path" "$output"; then
       rm -f -- "$output"
       cleanup_compose_container_files "$job_index" "$service" "$container_path"
       log error "kind=compose-dump engine=mssql service=$service database=$database_name message=copy-failed"
@@ -2942,7 +3125,7 @@ snapshot_oracle_database() {
     return 3
   }
   output="$snapshot_directory/full.dmp"
-  if ! docker cp "$container_id:$container_dump" "$output"; then
+  if ! docker_job_with_timeout "$job_index" cp "$container_id:$container_dump" "$output"; then
     rm -f -- "$output"
     cleanup_compose_container_files "$job_index" "$service" "$container_dump" "$container_log"
     log error "kind=compose-dump engine=oracle service=$service message=copy-failed"
@@ -2986,9 +3169,9 @@ snapshot_compose_volume() {
   # The helper stays networkless and read-only. DAC_READ_SEARCH is the minimum
   # capability needed for root in the helper to traverse Docker volume content
   # owned by an application UID (for example PostgreSQL's 0700 data directory).
-  if ! docker run --rm --pull=never --network none --read-only --cap-drop ALL --cap-add DAC_READ_SEARCH \
+  if ! docker_job_with_timeout "$job_index" run --rm --pull=never --network none --read-only --cap-drop ALL --cap-add DAC_READ_SEARCH \
     -v "$docker_volume:/source:ro" -v "$target:/backup:rw" "$helper_image" \
-    tar --create --file /backup/data.tar --directory /source .; then
+    tar --create --xattrs --acls --sparse --ignore-failed-read --file /backup/data.tar --directory /source .; then
     log error "kind=compose-volume job=$(cfg ".jobs[$job_index].name") volume=$logical_volume message=snapshot-failed"
     return 3
   fi
@@ -3007,7 +3190,8 @@ snapshot_compose_bind_mount() {
   target="$snapshot_directory/bind-mounts/$name"
   mkdir -p -- "$target"
   if [[ -d $source ]]; then
-    if tar --create --file - --directory "$source" . | tar --extract --file - --directory "$target"; then
+    if tar --create --xattrs --acls --sparse --ignore-failed-read --file - --directory "$source" . \
+      | tar --extract --xattrs --acls --sparse --file - --directory "$target"; then
       return 0
     fi
   elif cp --preserve=mode,timestamps -- "$source" "$target/$(basename -- "$source")"; then
@@ -3066,7 +3250,7 @@ pack_files_job() {
     printf '%s\0' "${path#/}" >>"$list_file"
   done
 
-  tar_arguments=(--create --file "$tar_file" --directory / --transform 's,^,data/,')
+  tar_arguments=(--create --xattrs --acls --sparse --ignore-failed-read --file "$tar_file" --directory / --transform 's,^,data/,')
   follow_symlinks=$(cfg ".jobs[$job_index].source.follow_symlinks // false")
   [[ $follow_symlinks == true ]] && tar_arguments+=(--dereference)
 
@@ -3091,7 +3275,7 @@ pack_compose_job() {
   local snapshot_directory="$WORK_DIRECTORY/compose-snapshot"
 
   prepare_compose_snapshot "$job_index" "$backup_id" "$snapshot_directory" || return 3
-  if ! tar --create --file "$tar_file" --directory "$snapshot_directory" --transform 's,^\.,data,' .; then
+  if ! tar --create --xattrs --acls --sparse --file "$tar_file" --directory "$snapshot_directory" --transform 's,^\.,data,' .; then
     log error "kind=pack message=compose-snapshot-pack-failed"
     return 3
   fi
@@ -3107,6 +3291,110 @@ safe_manifest_entry_path() {
   local path=$1
   [[ -n $path && $path != /* && $path != . && $path != .. && $path != ./* && $path != ../* \
     && $path != */../* && $path != */.. && $path != *$'\n'* && $path != *$'\r'* && $path != *$'\t'* ]]
+}
+
+sanitize_archive_members() {
+  local LC_ALL=C
+  local tar_file=$1
+  local job_index=$2
+  local helper="$WORK_DIRECTORY/archive-member-sanitizer.sh"
+  local records="$WORK_DIRECTORY/unsupported-archive-members.nul"
+  local raw_listing="$WORK_DIRECTORY/archive-member-names.list"
+  local record entry_type archive_path skipped=0
+
+  cat >"$helper" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+export LC_ALL=C
+
+archive_path=${TAR_FILENAME:-}
+entry_type=${TAR_FILETYPE:-}
+unsupported=false
+case "$entry_type" in
+  f|d|l|h) ;;
+  *) unsupported=true ;;
+esac
+if [[ $archive_path != data && $archive_path != data/* ]]; then
+  exit 1
+fi
+if [[ $archive_path == data ]]; then
+  [[ $entry_type == d ]] || exit 1
+else
+  entry_path=${archive_path#data/}
+  if [[ $entry_path == *$'\n'* || $entry_path == *$'\r'* || $entry_path == *$'\t'* \
+    || $entry_path == ' '* || $entry_path == */' '* ]]; then
+    unsupported=true
+  elif [[ $entry_path =~ [^[:print:]] ]] \
+    && ! printf '%s' "$entry_path" | iconv --from-code=UTF-8 --to-code=UTF-8 >/dev/null 2>&1; then
+    unsupported=true
+  fi
+fi
+[[ $unsupported == true ]] && printf '%s\t%s\0' "$entry_type" "$archive_path"
+cat >/dev/null
+EOF
+  chmod 0700 "$helper"
+  if ! tar --extract --to-command="$helper" --file "$tar_file" >"$records"; then
+    rm -f -- "$helper"
+    return 1
+  fi
+  rm -f -- "$helper"
+
+  # TAR_FILENAME is locale-converted by GNU tar before it reaches
+  # --to-command. Its literal verbose listing preserves original bytes and
+  # also exposes non-regular entries, for which --to-command is not invoked.
+  # That lets us remove names that cannot enter our UTF-8 YAML manifest and
+  # unsupported entry types before the manifest is parsed.
+  if ! LC_ALL=C tar --list --verbose --full-time --numeric-owner --quoting-style=literal --file "$tar_file" >"$raw_listing"; then
+    return 1
+  fi
+  while IFS= read -r record; do
+    [[ $record == ?*data/* ]] || continue
+    entry_type=${record:0:1}
+    archive_path=${record#*data/}
+    unsupported=false
+    case "$entry_type" in
+      -|d) : ;;
+      l) archive_path=${archive_path%%' -> '*} ;;
+      h) archive_path=${archive_path%%' link to '*} ;;
+      *) unsupported=true ;;
+    esac
+    archive_path="data/$archive_path"
+    if [[ $archive_path == *$'\n'* || $archive_path == *$'\r'* || $archive_path == *$'\t'* \
+      || $archive_path == data/' '* || $archive_path == */' '* ]]; then
+      unsupported=true
+    elif ! printf '%s' "$archive_path" | iconv --from-code=UTF-8 --to-code=UTF-8 >/dev/null 2>&1; then
+      unsupported=true
+    fi
+    [[ $unsupported == true ]] || continue
+
+    # A regular malformed name may already be present from --to-command. Do
+    # not delete that member twice merely because the literal listing also
+    # found it.
+    local already_marked=false existing_record existing_path
+    while IFS= read -r -d '' existing_record; do
+      existing_path=${existing_record#*$'\t'}
+      if [[ $existing_path == "$archive_path" ]]; then
+        already_marked=true
+        break
+      fi
+    done <"$records"
+    if [[ $already_marked == false ]]; then
+      printf 'x\t%s\0' "$archive_path" >>"$records"
+    fi
+  done <"$raw_listing"
+
+  while IFS= read -r -d '' record; do
+    entry_type=${record%%$'\t'*}
+    archive_path=${record#*$'\t'}
+    [[ $entry_type =~ ^[A-Za-z]$ && $archive_path == data/* ]] || return 1
+    if ! LC_ALL=C tar --delete --file "$tar_file" -- "$archive_path"; then
+      return 1
+    fi
+    skipped=$((skipped + 1))
+  done <"$records"
+  if ((skipped > 0)); then
+    log warning "kind=pack job=$(cfg ".jobs[$job_index].name") message=unsupported-entries-skipped count=$skipped"
+  fi
 }
 
 hash_regular_archive_files() {
@@ -3145,7 +3433,7 @@ manifest_entries_from_tar() {
   local count=0
 
   : >"$output"
-  tar --list --verbose --full-time --numeric-owner --quoting-style=literal --file "$tar_file" >"$listing" || return 1
+  TZ=UTC tar --list --verbose --full-time --numeric-owner --quoting-style=literal --file "$tar_file" >"$listing" || return 1
   hash_regular_archive_files "$tar_file" "$hash_records" || return 1
   exec 3<"$hash_records"
   while IFS=' ' read -r mode _owner size date_value time_value archive_path; do
@@ -3206,6 +3494,11 @@ pack_job() {
     docker_compose) pack_compose_job "$job_index" "$tar_file" "$backup_id" ;;
     *) return 3 ;;
   esac || return 3
+
+  if ! sanitize_archive_members "$tar_file" "$job_index"; then
+    log error "kind=pack job=$(cfg ".jobs[$job_index].name") message=archive-sanitize-failed"
+    return 3
+  fi
 
   if ! manifest_entries_from_tar "$tar_file" "$entries_file" \
     || ! create_manifest "$job_index" "$backup_id" "$created_at" "$payload_name" "$entries_file" "$manifest"; then
@@ -3743,13 +4036,14 @@ hook_result_name() {
 plan_job_hooks() {
   local job_index=$1
   local job_name=$2
-  local phase script argument_count
+  local phase script argument_count timeout_seconds
 
   for phase in pre post; do
     job_hook_configured "$job_index" "$phase" || continue
     script=$(cfg ".jobs[$job_index].hooks.$phase.path")
     argument_count=$(cfg "(.jobs[$job_index].hooks.$phase.args // []) | length")
-    log info "event=plan-hook job=$job_name phase=$phase path=$script args_count=$argument_count"
+    timeout_seconds=$(cfg ".jobs[$job_index].hooks.$phase.timeout_seconds // 300")
+    log info "event=plan-hook job=$job_name phase=$phase path=$script args_count=$argument_count timeout_seconds=$timeout_seconds"
   done
 }
 
@@ -3760,21 +4054,22 @@ run_job_hook() {
   local phase=$4
   local hook_result=$5
   local hook_exit_code=$6
-  local script argument_count argument_index argument hook_status
+  local script argument_count argument_index argument hook_status timeout_seconds
   local -a hook_arguments=()
 
   job_hook_configured "$job_index" "$phase" || return 0
   script=$(cfg ".jobs[$job_index].hooks.$phase.path")
+  timeout_seconds=$(cfg ".jobs[$job_index].hooks.$phase.timeout_seconds // 300")
   argument_count=$(cfg "(.jobs[$job_index].hooks.$phase.args // []) | length")
   for ((argument_index = 0; argument_index < argument_count; argument_index++)); do
     argument=$(cfg ".jobs[$job_index].hooks.$phase.args[$argument_index]")
     hook_arguments+=("$argument")
   done
 
-  log info "event=hook-started job=$job_name backup_id=$backup_id phase=$phase args_count=$argument_count"
+  log info "event=hook-started job=$job_name backup_id=$backup_id phase=$phase args_count=$argument_count timeout_seconds=$timeout_seconds"
   if (
     cd /
-    exec env -i \
+    exec timeout -k 30 "$timeout_seconds" env -i \
       PATH="$BACKFORT_HOOK_SAFE_PATH" \
       LANG=C \
       BACKFORT_HOOK_PHASE="$phase" \
@@ -3790,7 +4085,11 @@ run_job_hook() {
     return 0
   else
     hook_status=$?
-    log error "kind=hook job=$job_name backup_id=$backup_id phase=$phase exit_code=$hook_status message=failed"
+    if [[ $hook_status == 124 ]]; then
+      log error "kind=hook job=$job_name backup_id=$backup_id phase=$phase timeout_seconds=$timeout_seconds message=timed-out"
+    else
+      log error "kind=hook job=$job_name backup_id=$backup_id phase=$phase exit_code=$hook_status message=failed"
+    fi
     return "$hook_status"
   fi
 }
@@ -5477,7 +5776,7 @@ restore_command() {
   [[ $target_created == false ]] || chmod 0700 "$RESTORE_DIRECTORY"
 
   if ! tar --extract --file "$WORK_DIRECTORY/backup.tar" --directory "$RESTORE_DIRECTORY" \
-    --strip-components=1 --no-same-owner --delay-directory-restore; then
+    --xattrs --acls --sparse --same-owner --strip-components=1 --delay-directory-restore; then
     log error "event=restore-failed backup_id=$BACKUP_ID to=$RESTORE_DIRECTORY"
     cleanup_work_directory
     return 3
@@ -5629,6 +5928,7 @@ preflight_compose_restore_target() {
   require_command docker
   require_command grep
   require_command realpath
+  require_command timeout
   validate_absolute_path restore-compose.project_dir "$project_dir"
   job_name=$(cfg ".jobs[$job_index].name")
   if [[ ! -d $project_dir || -L $project_dir || ! -r $project_dir || ! -x $project_dir ]]; then
@@ -5650,12 +5950,12 @@ preflight_compose_restore_target() {
       return 2
     fi
   done
-  if ! docker_compose_target_project "$job_index" "$project_dir" version >/dev/null \
-    || ! docker_compose_target_project "$job_index" "$project_dir" config --quiet >/dev/null; then
+  if ! docker_compose_target_project_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" "$project_dir" version >/dev/null \
+    || ! docker_compose_target_project_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" "$project_dir" config --quiet >/dev/null; then
     log error "kind=compose-restore job=$job_name message=target-compose-project-invalid-or-unavailable"
     return 3
   fi
-  services=$(docker_compose_target_project "$job_index" "$project_dir" config --services) || {
+  services=$(docker_compose_target_project_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" "$project_dir" config --services) || {
     log error "kind=compose-restore job=$job_name message=target-compose-services-unavailable"
     return 3
   }
@@ -5666,7 +5966,7 @@ preflight_compose_restore_target() {
       log error "kind=compose-restore job=$job_name service=$service message=target-database-service-not-found"
       return 2
     fi
-    container_id=$(docker_compose_target_project "$job_index" "$project_dir" ps -q "$service") || {
+    container_id=$(docker_compose_target_project_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" "$project_dir" ps -q "$service") || {
       log error "kind=compose-restore job=$job_name service=$service message=target-database-container-unavailable"
       return 3
     }

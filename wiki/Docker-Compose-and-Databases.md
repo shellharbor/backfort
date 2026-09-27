@@ -16,6 +16,8 @@ jobs:
       files:
         - compose.yaml
         - .env
+      # Docker/Compose calls and dumps are bounded; default is 3600 seconds.
+      command_timeout_seconds: 3600
       volumes:
         - uploads
       volume_helper_image: registry.example/backfort-volume-helper@sha256:REPLACE_WITH_DIGEST
@@ -59,9 +61,10 @@ The Docker daemon must be available to the account running Backfort, and the
 helper needs a writable target mount. Backfort gives the helper no network, a
 read-only root filesystem, a read-only source volume, and no Linux
 capabilities except `DAC_READ_SEARCH`. That single capability lets a trusted
-`tar` helper traverse application-owned `0700` volume directories without
+GNU `tar` helper traverse application-owned `0700` volume directories without
 granting write, network, or general privilege. Pin an image that includes
-`tar` and runs the helper command as root. Run `backfort.sh doctor` after
+GNU `tar` and runs the helper command as root. Backfort requires its support
+for ACLs, extended attributes and sparse files. Run `backfort.sh doctor` after
 setting this up: it checks Docker and reports unavailable prerequisites before
 the backup window.
 
@@ -119,6 +122,11 @@ non-empty before the backup window. During a multi-job `run`, an unset variable
 fails only that job at `stage=preflight`, records a failed Prometheus result
 when metrics are enabled, sends the normal failure event, and lets independent
 jobs continue. No dump container is started for that failed job.
+
+`command_timeout_seconds` applies to every Compose/Docker call from this source,
+including `exec` dump clients, native MS SQL/Oracle work, helper containers and
+container copies. Set it above the normal duration of your largest dump but
+below the point where a hung client would block later backups indefinitely.
 
 ## Recommended recovery sequence
 

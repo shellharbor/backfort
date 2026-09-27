@@ -123,6 +123,9 @@ case "${1:-}" in
         shift
         executable=$1
         shift
+        if [[ -n ${BACKFORT_FAKE_DOCKER_EXEC_SLEEP:-} ]]; then
+          sleep "$BACKFORT_FAKE_DOCKER_EXEC_SLEEP"
+        fi
         case "$executable" in
           pg_dump)
             format=custom

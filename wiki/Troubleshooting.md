@@ -25,6 +25,9 @@ from the failed run, but remove any unrelated system secrets before sharing it.
 | Missing Compose database `password_env` | Put the secret value—not a YAML literal—in the named service-account environment, credential file, or secret manager. `doctor` exits `2`; `run` records that individual job as a preflight failure without starting a dump. |
 | Volume snapshot fails | The Docker daemon, project, volume and trusted helper image must be available to the account that runs Backfort. Ensure the pinned helper contains `tar` and runs it as root; Backfort supplies only the read/search capability needed for application-owned `0700` directories. |
 | Database dump fails | Verify service name, engine, database, user and password environment variable. Ensure the necessary client is in the database container. |
+| `kind=compose-exec ... message=timed-out` | The configured `command_timeout_seconds` elapsed. Check the Docker daemon and database client, then increase the setting only after measuring a healthy large dump. |
+| `kind=hook ... message=timed-out` | The hook exceeded its `timeout_seconds`. Run its cleanup action manually if needed, make the post hook idempotent, then fix or resize the bound. |
+| `unsupported-entries-skipped` during pack | Backfort preserved the usable portion of the source but omitted FIFO/device entries or names unsafe for a portable manifest. Replace or explicitly exclude those entries if they are required data. |
 | Restore refuses a target | Restore into a new or empty explicit directory; inspect a staging restore before replacing live data. |
 
 ## Diagnose a destination and a version

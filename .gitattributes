@@ -1,0 +1,3 @@
+# Backfort runs on Linux even when contributors edit it on Windows. Keep all
+# tracked text reproducible and executable scripts free of CRLF line endings.
+* text=auto eol=lf

@@ -35,6 +35,11 @@ freezing a filesystem, or releasing it after the archive pipeline. See
 [Configuration](Configuration#lifecycle-hooks) for the safe file, ownership,
 environment, failure, and signal contract.
 
+Give every hook a finite `timeout_seconds` (the default is 300 seconds). A
+timed-out pre hook fails the job but still invokes the post hook for cleanup;
+the post action must therefore be safe to repeat. Compose sources have their
+own `command_timeout_seconds` (default 3600) for Docker calls and dumps.
+
 ## systemd example
 
 Create `/etc/systemd/system/backfort.service`:
@@ -136,4 +141,14 @@ Text templates can use `{{job}}`, `{{id}}`, `{{error}}`, `{{destinations}}`,
 `{{threshold}}`, and other documented event fields. Unknown placeholders reject
 the configuration before an operation starts. Set `digest: daily` to collect
 success and prune activity; the next Backfort event flushes the prior day's
-digest without a resident daemon.
+digest without a resident daemon. Digest webhooks use `event: "digest"` with
+blank job, backup ID, and error values, plus `stage: "digest"`, rather than
+reusing the event that happened to trigger delivery. A channel can opt in with
+`success`, `prune`, or `digest`.
+
+Telegram renders trusted template markup as HTML and retries once as plain text
+when Telegram rejects it, so an escaping edge case cannot suppress an alert.
+For authenticated SMTP, `starttls: true` remains supported; use
+`tls_mode: implicit` for port 465. Plain authenticated SMTP (`starttls: false`)
+is rejected, and every message carries UTF-8 `Date`, `Message-ID`, and
+`Content-Type` headers.

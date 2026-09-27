@@ -57,7 +57,7 @@ settings:
 #       type: smtp
 #       host: smtp.example.net
 #       port: 587
-#       starttls: true
+#       tls_mode: starttls            # starttls | implicit (port 465)
 #       username_env: BACKFORT_SMTP_USER
 #       password_env: BACKFORT_SMTP_PASSWORD
 #       to: [ops@example.net]
@@ -96,9 +96,11 @@ jobs:
     #   pre:
     #     path: /usr/local/lib/backfort/hooks/quiesce-application
     #     args: [freeze]
+    #     timeout_seconds: 120        # default: 300, max: 86400
     #   post:
     #     path: /usr/local/lib/backfort/hooks/quiesce-application
     #     args: [unfreeze]
+    #     timeout_seconds: 120
 
     destinations: [local]
     success:

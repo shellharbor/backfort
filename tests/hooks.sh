@@ -23,6 +23,7 @@ CONFIG_FILE="$TEST_DIRECTORY/config.yaml"
 PRE_FAILURE_CONFIG="$TEST_DIRECTORY/pre-failure.yaml"
 POST_FAILURE_CONFIG="$TEST_DIRECTORY/post-failure.yaml"
 UNSAFE_CONFIG="$TEST_DIRECTORY/unsafe.yaml"
+TIMEOUT_CONFIG="$TEST_DIRECTORY/timeout.yaml"
 
 mkdir -p "$SOURCE_DIRECTORY" "$BACKUP_DIRECTORY" "$STATE_DIRECTORY" "$TEMP_DIRECTORY"
 printf 'hook test payload\n' >"$SOURCE_DIRECTORY/data.txt"
@@ -47,6 +48,7 @@ printf '%s|%s|%s|%s|%s|%s\n' \
 
 case "$BACKFORT_HOOK_PHASE:$behavior" in
   pre:fail-pre) exit 12 ;;
+  pre:slow) sleep 3 ;;
   post:fail-post) exit 13 ;;
 esac
 EOF
@@ -56,6 +58,7 @@ write_config() {
   local output=$1
   local pre_behavior=$2
   local post_behavior=$3
+  local pre_timeout=${4:-300}
 
   cat >"$output" <<EOF
 version: 1
@@ -84,6 +87,7 @@ jobs:
       pre:
         path: "$HOOK_SCRIPT"
         args: ["$HOOK_LOG", "$pre_behavior"]
+        timeout_seconds: $pre_timeout
       post:
         path: "$HOOK_SCRIPT"
         args: ["$HOOK_LOG", "$post_behavior"]
@@ -143,5 +147,21 @@ else
 fi
 [[ $UNSAFE_STATUS -eq 2 ]]
 grep -q 'hook-group-or-other-writable' "$TEST_DIRECTORY/unsafe.log"
+
+# A bounded pre-hook cannot hold the backup lock forever. The post hook still
+# receives the failed result, so it can undo a partial freeze or other setup.
+chmod 0700 "$HOOK_SCRIPT"
+rm -f -- "$HOOK_LOG"
+write_config "$TIMEOUT_CONFIG" slow normal 1
+if "$PROJECT_DIRECTORY/backfort.sh" -c "$TIMEOUT_CONFIG" run >"$TEST_DIRECTORY/timeout.out" 2>"$TEST_DIRECTORY/timeout.err"; then
+  printf 'expected timed-out pre hook to stop the backup\n' >&2
+  exit 1
+else
+  TIMEOUT_STATUS=$?
+fi
+[[ $TIMEOUT_STATUS -eq 3 ]]
+grep -q 'message=timed-out' "$TEST_DIRECTORY/timeout.err"
+grep -q 'timeout_seconds=1' "$TEST_DIRECTORY/timeout.err"
+[[ $(awk -F '|' 'NR == 2 { print $1 ":" $4 ":" $5 }' "$HOOK_LOG") == 'post:failure:3' ]]
 
 printf 'Backfort hooks test passed.\n'

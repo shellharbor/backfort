@@ -47,8 +47,9 @@ Never place a vulnerability report or secret in a public issue.
 
 Every push and pull request runs the Linux regression suite, ShellCheck, YAML
 example validation, and Bash 4.3 syntax **and runtime** gates. The suite also
-covers shared-destination host isolation and a controlled temporary-workspace
-failure. A separate Documentation
+covers shared-destination host isolation, a controlled temporary-workspace
+failure, archive resilience for special files and unusual names, and metadata
+fidelity for ACLs, extended attributes, sparse files and ownership. A separate Documentation
 workflow checks local Markdown links across the README, Wiki sources, examples,
 and community documents, plus whitespace in changed files. CodeQL reviews
 GitHub Actions workflow definitions;
@@ -56,6 +57,10 @@ OpenSSF Scorecard publishes supply-chain findings; Dependabot proposes grouped
 weekly GitHub Actions updates. A `vX.Y.Z` tag is accepted only when the CLI
 version and the matching Changelog heading are release-ready. The repository
 README links to the live workflow results.
+
+The source-control baseline keeps tracked text in LF form so the Bash CLI works
+the same from Windows and Linux checkouts. Local IDE metadata such as `.idea/`
+is deliberately ignored rather than shared as project configuration.
 
 ## The safety model
 

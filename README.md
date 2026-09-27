@@ -283,9 +283,11 @@ jobs:
       pre:
         path: /usr/local/lib/backfort/hooks/crm-maintenance
         args: [enable]
+        timeout_seconds: 120
       post:
         path: /usr/local/lib/backfort/hooks/crm-maintenance
         args: [disable]
+        timeout_seconds: 120
     retention:
       keep_last: 3
       keep_daily: 7
@@ -361,9 +363,11 @@ credential for an external application, make the root-owned script obtain it
 from its own protected source; do not put it in YAML or an argument.
 
 If a post hook exists, Backfort invokes it after a completed pre hook even when
-the pre hook fails, so cleanup scripts must be idempotent. A failed pre hook
-stops archive creation; a failed post hook makes the command fail with exit
-code `3` even if a completed backup was already published. On an ordinary
+the pre hook fails, so cleanup scripts must be idempotent. Each hook has a
+bounded `timeout_seconds` (300 seconds by default; 1–86400 allowed). A timed
+out pre hook stops archive creation and still runs the post hook for cleanup;
+a timed out or failed post hook makes the command fail with exit code `3` even
+if a completed backup was already published. On an ordinary
 `INT` or `TERM` during the backup pipeline, Backfort also attempts the post
 hook. `SIGKILL` and host power loss cannot be intercepted, so every cleanup
 hook must remain safe to run again manually.
@@ -424,11 +428,13 @@ source:
   type: docker_compose
   project_dir: /srv/crm
   files: [compose.yaml, compose.production.yaml]
+  # Bounds Docker/Compose calls and every database dump; default: 3600.
+  command_timeout_seconds: 3600
 
   # These are logical volume names from the Compose project. They must not be
   # live database volumes; database consistency comes from the dump below.
   volumes: [uploads, documents]
-  # Must already be present locally and contain GNU or BusyBox-compatible tar.
+  # Must already be present locally and contain GNU tar.
   volume_helper_image: registry.example/backfort-volume-helper@sha256:REPLACE_WITH_DIGEST
 
   # Paths are relative to project_dir and must stay inside it.
@@ -458,7 +464,10 @@ writable mount is the temporary archive target.
 The `password_env` value is the **name** of a host environment variable, not a
 password. Backfort passes its value into the target container using the engine's
 password environment variable; it neither places the secret in its command
-arguments nor stores it in the bundle metadata.
+arguments nor stores it in the bundle metadata. `command_timeout_seconds`
+applies to Docker/Compose checks, helper containers, container copies, and
+logical/native database dumps. Its default is one hour, and it accepts 1–86400
+seconds so an operator can match the timeout to the largest expected dump.
 
 Database engine settings are as follows:
 
@@ -707,7 +716,8 @@ notifications:
 ```
 
 The fixed event set is `success`, `partial`, `failure`, `recovery`, `watchdog`,
-`restore_success`, `restore_failure`, `prune`, and reserved `drill_failure`.
+`restore_success`, `restore_failure`, `prune`, `digest`, and reserved
+`drill_failure`.
 Channels without an `events` list inherit `defaults.events`. Success is opt-in:
 after the initial success, Backfort records per-job status and sends `recovery`
 instead only when a job previously failed or was partial. `failure`, `partial`,
@@ -722,16 +732,23 @@ uniform across Telegram, ntfy, webhooks, and SMTP.
 
 Set `defaults.digest: daily` to collect `success` and `prune` activity in the
 state directory. The first later Backfort event flushes the prior day's digest,
-so no resident daemon is needed. Channels must opt into `success` or `prune` to
-receive that digest.
+so no resident daemon is needed. A digest webhook is explicitly
+`event: "digest"` with blank job/backup/error fields and `stage: "digest"`; it
+never accidentally inherits a later failure's context. Channels may opt into
+`success`, `prune`, or `digest` to receive it.
 
 Telegram requires `BACKFORT_TG_TOKEN` and `BACKFORT_TG_CHAT`; `BACKFORT_TG_THREAD`
 is optional. ntfy requires `BACKFORT_NTFY_TOPIC`. Webhooks require a URL in
 `BACKFORT_WEBHOOK_URL` and may receive newline-separated `Header: value` lines
-from `BACKFORT_WEBHOOK_HEADERS`. SMTP channels check their configured username
-and password environment variables and submit through a locally configured
-`msmtp` or `sendmail`-compatible binary. Run `doctor` to see only the names and readiness
-of every configured channel, never their secret values.
+from `BACKFORT_WEBHOOK_HEADERS`. Telegram uses HTML for trusted template markup
+but automatically retries once as plain text when Telegram rejects that markup,
+so a malformed entity cannot lose an alert. SMTP channels check their configured
+username and password environment variables and submit through a locally
+configured `msmtp` or `sendmail`-compatible binary. Authenticated remote SMTP
+requires TLS: use legacy `starttls: true`, or `tls_mode: implicit` for port 465;
+`starttls: false` is rejected before delivery. Backfort emits UTF-8
+`Date`, `Message-ID`, and `Content-Type` headers. Run `doctor` to see only the
+names and readiness of every configured channel, never their secret values.
 
 #### Message templates
 
@@ -948,6 +965,16 @@ orphan files, never a partial bundle presented as recoverable. `list`, `status`,
 Automatic lookup is host-scoped: a shared destination can hold several hosts'
 copies of one job without one server listing, restoring, retaining, or judging
 another server's copies as its own.
+
+For recovery fidelity, Backfort archives and restores POSIX ACLs, extended
+attributes (including Linux file capabilities), sparse extents, timestamps, and
+numeric ownership. Run restores with appropriate privilege when original
+ownership must be recreated. A live file that changes while GNU tar reads it is
+reported by tar but no longer aborts the whole version; the manifest describes
+the files actually captured. FIFOs, device nodes, and names that cannot be
+represented safely in the portable JSON manifest (control characters,
+leading-space path components, or invalid UTF-8) are omitted with a structured
+pack warning instead of invalidating the rest of the backup.
 
 ## Verification
 

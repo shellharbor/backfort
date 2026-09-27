@@ -34,7 +34,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends gnupg shellcheck python3
+          sudo apt-get install --yes --no-install-recommends acl attr gnupg shellcheck python3
           go install github.com/mikefarah/yq/v4@v4.45.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
@@ -80,6 +80,12 @@ jobs:
 
       - name: Run per-file hash test
         run: bash tests/file-hashes.sh
+
+      - name: Run archive resilience test
+        run: bash tests/archive-resilience.sh
+
+      - name: Run restore fidelity test
+        run: bash tests/fidelity.sh
 
       - name: Run quick backup test
         run: bash tests/quick.sh

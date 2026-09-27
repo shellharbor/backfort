@@ -34,6 +34,7 @@ cfg() {
   case "$1" in
     '.jobs[0].hooks.pre.path') printf '%s\n' "$HOOK_SCRIPT" ;;
     '(.jobs[0].hooks.pre.args // []) | length') printf '0\n' ;;
+    '.jobs[0].hooks.pre.timeout_seconds // 300') printf '300\n' ;;
     '.jobs[0].source.type') printf 'files\n' ;;
     *)
       printf 'unexpected test configuration lookup: %s\n' "$1" >&2
