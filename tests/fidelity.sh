@@ -4,17 +4,34 @@ set -Eeuo pipefail
 IFS=$'\n\t'
 
 PROJECT_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-TEST_DIRECTORY=$(mktemp -d)
+TEST_DIRECTORY=$(mktemp -d /tmp/backfort-fidelity.XXXXXXXX)
 CHANGER_PID=''
 
 cleanup() {
+  local result=$?
+
+  trap - EXIT
+  set +e
+
   if [[ -n $CHANGER_PID ]]; then
     kill "$CHANGER_PID" >/dev/null 2>&1 || true
     wait "$CHANGER_PID" 2>/dev/null || true
   fi
+
   case "$TEST_DIRECTORY" in
-    /tmp/*|/var/tmp/*) rm -rf -- "$TEST_DIRECTORY" ;;
+    /tmp/backfort-fidelity.*)
+      if ((EUID == 0)); then
+        rm -rf -- "$TEST_DIRECTORY"
+      else
+        sudo rm -rf -- "$TEST_DIRECTORY"
+      fi
+      ;;
+    *)
+      printf 'Refusing to remove unexpected test directory: %s\n' "$TEST_DIRECTORY" >&2
+      ;;
   esac
+
+  exit "$result"
 }
 trap cleanup EXIT
 
@@ -143,9 +160,11 @@ MTIME_ONE=$(run_privileged env BF_STABLE_PATH="$STABLE_MANIFEST_PATH" yq eval -r
 MTIME_TWO=$(run_privileged env BF_STABLE_PATH="$STABLE_MANIFEST_PATH" yq eval -r '.entries[] | select(.path == strenv(BF_STABLE_PATH)) | .mtime' "${METADATA_FILES[1]}")
 [[ -n $MTIME_ONE && $MTIME_ONE == "$MTIME_TWO" ]]
 
-grep -q -- '--xattrs' "$TAR_LOG"
-grep -q -- '--acls' "$TAR_LOG"
-grep -q -- '--sparse' "$TAR_LOG"
-grep -q -- '--ignore-failed-read' "$TAR_LOG"
+# Backfort runs the archive process with a restrictive umask, so this trace is
+# root-owned when the test exercises privileged ownership restoration.
+run_privileged grep -q -- '--xattrs' "$TAR_LOG"
+run_privileged grep -q -- '--acls' "$TAR_LOG"
+run_privileged grep -q -- '--sparse' "$TAR_LOG"
+run_privileged grep -q -- '--ignore-failed-read' "$TAR_LOG"
 
 printf 'Backfort restore fidelity test passed.\n'

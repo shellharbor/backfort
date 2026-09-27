@@ -99,6 +99,9 @@ jobs:
       - name: Run Docker Compose smoke test
         run: bash tests/compose-smoke.sh
 
+      - name: Run real Compose database recovery test
+        run: bash tests/compose-real-integration.sh
+
       - name: Run Compose restore assistant test
         run: bash tests/restore-compose.sh
 

@@ -76,6 +76,11 @@ recovery account when owner fidelity is required; an unprivileged account may
 be unable to recreate another UID/GID. The destination must still be new or
 empty—fidelity never authorizes an in-place overwrite.
 
+The automated fidelity check runs this privileged recovery path from a
+non-root CI worker and asserts the recovered owner, ACL, extended attribute
+and sparse-file layout. This guards against a future change silently replacing
+preserved ownership with the account that performs the restore.
+
 ## Restore a Compose project
 
 First restore the Compose version. Its contents are organised in familiar

@@ -173,6 +173,16 @@ passwords in the configured environment variables and passes them only as
 container environment variables. It refuses an apply that includes MS SQL or
 Oracle; use the vendor recovery procedure for those native artifacts.
 
+## Live recovery coverage
+
+Backfort's CI includes a real Docker Compose recovery check alongside its fast
+hermetic tests. It starts isolated PostgreSQL and MySQL containers, writes
+distinct probe rows and a named-volume file, creates a normal Compose backup,
+runs `verify --full`, then applies the logical dumps to a separate running
+Compose project. The test queries both target databases and reads the staged
+named-volume archive. This guards the Docker/Compose command boundary with
+real clients without making a live production restore automatic.
+
 See [Restore and Verification](Restore-and-Verification) for concrete import
 commands, [Quick Backups](Quick-Backups) for a one-command Compose snapshot,
 and [Compose Migration](Compose-Migration) for a staged server move.

@@ -1346,7 +1346,7 @@ Backfort's badges point to checks that are actually tracked in the repository:
 
 | Guardrail | What it protects |
 | --- | --- |
-| [CI](.github/workflows/ci.yml) | Bash syntax and runtime on Bash 4.3, ShellCheck, YAML examples, host-scope and workspace-failure regressions, plus the hermetic suite. |
+| [CI](.github/workflows/ci.yml) | Bash syntax and runtime on Bash 4.3, ShellCheck, YAML examples, the hermetic suite, and a real PostgreSQL/MySQL Compose backup-and-recovery round trip. |
 | [Documentation](.github/workflows/documentation.yml) | Internal Markdown links across the README, Wiki sources, examples, and community documents, plus whitespace in changed files. |
 | [CodeQL](.github/workflows/codeql.yml) | GitHub Actions workflow analysis on pull requests, `main`, and a weekly schedule. |
 | [OpenSSF Scorecard](.github/workflows/scorecard.yml) | A weekly supply-chain review published to GitHub code scanning. |

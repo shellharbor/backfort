@@ -136,7 +136,7 @@ ignored workspace state, not a project artifact.
 | Lifecycle hook or timeout | validator and preflight, hook execution and signal cleanup, `tests/hooks.sh`, README, `Configuration`, and `Automation-and-Notifications` Wiki pages |
 | GitHub automation or badge | `.github/workflows/`, `.github/dependabot.yml`, README badges, `CHANGELOG.md`, and Wiki maintainer guidance; never add a badge without its real workflow or public service |
 | Local/rclone bundle behavior | atomic publish, host-scoped automatic discovery, list/verify/restore/prune/delete behavior, smoke tests, recovery and storage docs |
-| Compose or database adapter | Compose validation, fake Docker test, command timeout behavior, recovery instructions, `Docker-Compose-and-Databases`, `Compose-Migration`, and `Restore-and-Verification` Wiki pages |
+| Compose or database adapter | Compose validation, fake Docker test, real PostgreSQL/MySQL recovery integration, command timeout behavior, recovery instructions, `Docker-Compose-and-Databases`, `Compose-Migration`, and `Restore-and-Verification` Wiki pages |
 | Security, encryption, signing or notifications | validation, negative tests, redaction/log review, README and relevant Wiki safety/automation pages |
 | GitHub community or disclosure policy | `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, `SUPPORT.md`, README links, and this skill when routing changes |
 
@@ -160,6 +160,7 @@ bash tests/smoke.sh
 
 Run the specialized test when its surface changes: `quick.sh`,
 `rclone-smoke.sh`, `compose-smoke.sh`, `restore-compose.sh`,
+`compose-real-integration.sh`,
 `crypto-smoke.sh`, `gpg-asymmetric.sh`, `file-hashes.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
 `delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, `metrics.sh`,
 `preflight-failure.sh`, `host-scope.sh`, `workspace-failure.sh`,
