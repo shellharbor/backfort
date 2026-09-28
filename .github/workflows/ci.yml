@@ -90,6 +90,9 @@ jobs:
       - name: Run restore fidelity test
         run: bash tests/fidelity.sh
 
+      - name: Run unreadable and unsupported source file test
+        run: bash tests/unreadable-file.sh
+
       - name: Run quick backup test
         run: bash tests/quick.sh
 
@@ -101,6 +104,9 @@ jobs:
 
       - name: Run real Compose database recovery test
         run: bash tests/compose-real-integration.sh
+
+      - name: Run in-container exec timeout test
+        run: bash tests/compose-exec-timeout-real.sh
 
       - name: Run Compose restore assistant test
         run: bash tests/restore-compose.sh

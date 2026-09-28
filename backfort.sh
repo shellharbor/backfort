@@ -5,7 +5,7 @@ IFS=$'\n\t'
 LC_ALL=C
 umask 077
 
-readonly BACKFORT_VERSION="1.0.0"
+readonly BACKFORT_VERSION="1.1.0"
 
 CONFIG_FILE="/etc/backfort/config.yaml"
 CONFIG_FILE_EXPLICIT=false
@@ -80,6 +80,7 @@ declare -A RCLONE_DESTINATION_OBJECT_LIST_LOADED=()
 declare -A RCLONE_DESTINATION_OBJECT_SET=()
 declare -a PRUNE_DELETED_IDS=()
 PRUNE_FREED_BYTES=0
+PACK_UNSUPPORTED_ENTRY_COUNT=0
 
 # Text-channel templates are deliberately kept in code rather than YAML so a
 # minimally configured installation always emits an actionable alert.
@@ -2354,7 +2355,7 @@ notification_parse_headers() {
 
 notification_curl_post() {
   local url=$1
-  local now_seconds timeout temporary header response
+  local now_seconds timeout temporary header response http_code
 
   command -v curl >/dev/null 2>&1 || return 4
   now_seconds=$(date -u +%s)
@@ -2370,14 +2371,24 @@ notification_curl_post() {
     rm -f -- "$temporary"
     return 1
   fi
-  if response=$(curl --silent --show-error --fail --max-time "$timeout" --config "$temporary" \
-    --data-binary "@$NOTIFY_BODY_FILE" 2>&1); then
+  # --fail discards the response body on a non-2xx status. That hides a
+  # channel's own error payload (for example Telegram's {"ok":false,...} for
+  # a rejected HTML message) from a caller that needs to inspect it before
+  # deciding whether to retry, so the status is read explicitly via
+  # --write-out and classified here instead of leaning on curl's own
+  # pass/fail decision. A connection-level failure (DNS, TLS, timeout) still
+  # makes curl itself exit nonzero regardless of --fail, so that case is
+  # unaffected and still reported as a delivery failure below.
+  if ! response=$(curl --silent --show-error --max-time "$timeout" --config "$temporary" \
+    --write-out $'\n%{http_code}' --data-binary "@$NOTIFY_BODY_FILE" 2>&1); then
     rm -f -- "$temporary"
-    NOTIFY_CURL_RESPONSE=$response
-    return 0
+    return 1
   fi
   rm -f -- "$temporary"
-  return 1
+  http_code=${response##*$'\n'}
+  [[ $http_code =~ ^[0-9]{3}$ ]] || return 1
+  NOTIFY_CURL_RESPONSE=${response%$'\n'"$http_code"}
+  ((http_code >= 200 && http_code < 300))
 }
 
 notification_html_escape() {
@@ -2403,7 +2414,7 @@ notification_telegram_body() {
 notification_send_telegram() {
   local index=$1
   local message=$2
-  local channel token_env chat_env thread_env token chat thread body url plain_message
+  local channel token_env chat_env thread_env token chat thread body url plain_message send_result
 
   channel=${NOTIFY_CHANNEL_NAMES[index]}
   token_env=${NOTIFY_CHANNEL_TOKEN_ENVS[index]}
@@ -2428,31 +2439,27 @@ notification_send_telegram() {
   notification_make_body_file "$body" || return 1
   NOTIFY_CURL_HEADERS='Content-Type: application/json'
   url="https://api.telegram.org/bot${token}/sendMessage"
-  if notification_curl_post "$url"; then
-    :
-  else
-    local result=$?
-    rm -f -- "$NOTIFY_BODY_FILE"
-    return "$result"
-  fi
+  NOTIFY_CURL_RESPONSE=''
+  if notification_curl_post "$url"; then send_result=0; else send_result=$?; fi
   rm -f -- "$NOTIFY_BODY_FILE"
-  if [[ $NOTIFY_CURL_RESPONSE =~ \"ok\"[[:space:]]*:[[:space:]]*false ]]; then
+  # A rejected HTML message (an invalid parse_mode markup tag in a trusted
+  # template) fails with an HTTP error status but still carries Telegram's
+  # own {"ok":false,...} body, so retry once as unescaped plain text before
+  # giving up. A transport-level failure (timeout, DNS, TLS) never leaves a
+  # response body behind and is never retried here.
+  if ((send_result != 0)) && [[ $NOTIFY_CURL_RESPONSE =~ \"ok\"[[:space:]]*:[[:space:]]*false ]]; then
     plain_message=$(notification_plain_text "$message")
     plain_message=$(notification_normalize_message "$plain_message" telegram)
     if ! body=$(notification_telegram_body "$chat" "$plain_message" "$thread" false) \
       || ! notification_make_body_file "$body"; then
       return 1
     fi
-    if notification_curl_post "$url"; then
-      :
-    else
-      local result=$?
-      rm -f -- "$NOTIFY_BODY_FILE"
-      return "$result"
-    fi
+    NOTIFY_CURL_RESPONSE=''
+    if notification_curl_post "$url"; then send_result=0; else send_result=$?; fi
     rm -f -- "$NOTIFY_BODY_FILE"
-    [[ $NOTIFY_CURL_RESPONSE =~ \"ok\"[[:space:]]*:[[:space:]]*false ]] && return 1
   fi
+  ((send_result == 0)) || return "$send_result"
+  [[ $NOTIFY_CURL_RESPONSE =~ \"ok\"[[:space:]]*:[[:space:]]*false ]] && return 1
   return 0
 }
 
@@ -2986,7 +2993,12 @@ compose_exec_with_secret() {
 
   if (
     export "$container_variable=$secret"
-    docker_compose_job_with_timeout "$job_index" "$timeout_seconds" exec -T -e "$container_variable" "$service" "$@"
+    # The host-side wrapper only bounds how long Backfort waits for the
+    # docker CLI; killing that client process does not stop the process it
+    # started inside the container's own PID namespace. Wrapping the actual
+    # command with an in-container timeout is what actually reaps it.
+    docker_compose_job_with_timeout "$job_index" "$timeout_seconds" exec -T -e "$container_variable" "$service" \
+      timeout -k 10 "$timeout_seconds" "$@"
   ); then
     result=0
   else
@@ -3015,7 +3027,8 @@ compose_target_exec_with_secret() {
 
   if (
     export "$container_variable=$secret"
-    docker_compose_target_project_with_timeout "$job_index" "$timeout_seconds" "$project_dir" exec -T -e "$container_variable" "$service" "$@"
+    docker_compose_target_project_with_timeout "$job_index" "$timeout_seconds" "$project_dir" exec -T -e "$container_variable" "$service" \
+      timeout -k 10 "$timeout_seconds" "$@"
   ); then
     result=0
   else
@@ -3041,7 +3054,10 @@ cleanup_compose_container_files() {
   local job_index=$1
   local service=$2
   shift 2
-  if ! docker_compose_job_with_timeout "$job_index" "$(compose_command_timeout_seconds "$job_index")" exec -T "$service" rm -f -- "$@" >/dev/null 2>&1; then
+  local timeout_seconds
+  timeout_seconds=$(compose_command_timeout_seconds "$job_index")
+  if ! docker_compose_job_with_timeout "$job_index" "$timeout_seconds" exec -T "$service" \
+    timeout -k 10 "$timeout_seconds" rm -f -- "$@" >/dev/null 2>&1; then
     log warning "kind=compose-cleanup job=$(cfg ".jobs[$job_index].name") service=$service message=temporary-dump-cleanup-failed"
   fi
 }
@@ -3219,26 +3235,61 @@ snapshot_compose_databases() {
   done
 }
 
+# GNU tar's own exit status distinguishes a recoverable race (1: "some files
+# differ", e.g. a file that changed while it was being archived) from a real
+# read failure (2 and above: for example a permission-denied file that even
+# --cap-add DAC_READ_SEARCH could not open). Backfort never treats the
+# latter as quiet success: an archive that is missing source data must never
+# be reported as a completed backup.
+handle_tar_pack_status() {
+  local status=$1
+  local job_index=$2
+  local context=$3
+
+  case "$status" in
+    0) return 0 ;;
+    1)
+      log warning "kind=pack job=$(cfg ".jobs[$job_index].name") context=$context message=source-files-changed-during-read"
+      return 0
+      ;;
+    124)
+      log error "kind=pack job=$(cfg ".jobs[$job_index].name") context=$context message=timed-out"
+      return 1
+      ;;
+    *)
+      log error "kind=pack job=$(cfg ".jobs[$job_index].name") context=$context message=tar-failed exit_code=$status"
+      return 1
+      ;;
+  esac
+}
+
 snapshot_compose_volume() {
   local job_index=$1
   local logical_volume=$2
   local snapshot_directory=$3
-  local helper_image docker_volume target
+  local helper_image docker_volume target timeout_seconds tar_status
 
   helper_image=$(cfg ".jobs[$job_index].source.volume_helper_image")
   docker_volume=$(compose_volume_name "$job_index" "$logical_volume") || return 3
   target="$snapshot_directory/volumes/$logical_volume"
   mkdir -p -- "$target"
+  timeout_seconds=$(compose_command_timeout_seconds "$job_index")
   # The helper stays networkless and read-only. Its archive stream is written
   # by Backfort into the protected workspace, so it receives no writable host
   # mount. DAC_READ_SEARCH is the minimum capability needed for root in the
   # helper to traverse Docker volume content owned by an application UID (for
-  # example PostgreSQL's 0700 data directory).
-  if ! docker_job_with_timeout "$job_index" run --rm --pull=never --network none --read-only --cap-drop ALL --cap-add DAC_READ_SEARCH \
+  # example PostgreSQL's 0700 data directory). Wrapping tar with an
+  # in-container timeout makes it the helper's own PID 1, so the container
+  # self-terminates even if the host-side docker client is killed first.
+  if docker_job_with_timeout "$job_index" run --rm --pull=never --network none --read-only --cap-drop ALL --cap-add DAC_READ_SEARCH \
     -v "$docker_volume:/source:ro" "$helper_image" \
-    tar --create --xattrs --acls --sparse --ignore-failed-read --file - --directory /source . >"$target/data.tar"; then
+    timeout -k 10 "$timeout_seconds" tar --create --xattrs --acls --sparse --file - --directory /source . >"$target/data.tar"; then
+    tar_status=0
+  else
+    tar_status=$?
+  fi
+  if ! handle_tar_pack_status "$tar_status" "$job_index" "volume:$logical_volume"; then
     rm -f -- "$target/data.tar"
-    log error "kind=compose-volume job=$(cfg ".jobs[$job_index].name") volume=$logical_volume message=snapshot-failed"
     return 3
   fi
 }
@@ -3247,7 +3298,7 @@ snapshot_compose_bind_mount() {
   local job_index=$1
   local bind_index=$2
   local snapshot_directory=$3
-  local project_dir name relative_path source target
+  local project_dir name relative_path source target tar_status
 
   project_dir=$(cfg ".jobs[$job_index].source.project_dir")
   name=$(cfg ".jobs[$job_index].source.bind_mounts[$bind_index].name")
@@ -3256,17 +3307,22 @@ snapshot_compose_bind_mount() {
   target="$snapshot_directory/bind-mounts/$name"
   mkdir -p -- "$target"
   if [[ -d $source ]]; then
-    if tar --create --xattrs --acls --sparse --ignore-failed-read --file - --directory "$source" . \
+    # pipefail (set at the top of the script) reports the rightmost nonzero
+    # status of the pipeline, so a create-side race (status 1) is not masked
+    # by a clean extract-side status 0.
+    if tar --create --xattrs --acls --sparse --file - --directory "$source" . \
       | tar --extract --xattrs --acls --sparse --file - --directory "$target"; then
-      return 0
+      tar_status=0
+    else
+      tar_status=$?
     fi
+    handle_tar_pack_status "$tar_status" "$job_index" "bind-mount:$name" || return 3
+    return 0
   elif cp --preserve=mode,timestamps -- "$source" "$target/$(basename -- "$source")"; then
     return 0
   fi
-  {
-    log error "kind=compose-bind-mount job=$(cfg ".jobs[$job_index].name") name=$name message=snapshot-failed"
-    return 3
-  }
+  log error "kind=compose-bind-mount job=$(cfg ".jobs[$job_index].name") name=$name message=snapshot-failed"
+  return 3
 }
 
 prepare_compose_snapshot() {
@@ -3306,7 +3362,7 @@ pack_files_job() {
   local job_index=$1
   local tar_file=$2
   local list_file="$WORK_DIRECTORY/source-paths.list"
-  local paths_count path_index path exclude_count exclude_index exclude follow_symlinks
+  local paths_count path_index path exclude_count exclude_index exclude follow_symlinks tar_status
   local -a tar_arguments
 
   paths_count=$(cfg ".jobs[$job_index].source.paths | length")
@@ -3316,7 +3372,12 @@ pack_files_job() {
     printf '%s\0' "${path#/}" >>"$list_file"
   done
 
-  tar_arguments=(--create --xattrs --acls --sparse --ignore-failed-read --file "$tar_file" --directory / --transform 's,^,data/,')
+  # No --ignore-failed-read: that flag makes GNU tar treat an unreadable file
+  # (permission denied, I/O error) the same as a harmless read race, silently
+  # omitting it from the archive while the backup is still reported as a
+  # success. handle_tar_pack_status below tells those two cases apart by
+  # tar's own exit status instead.
+  tar_arguments=(--create --xattrs --acls --sparse --file "$tar_file" --directory / --transform 's,^,data/,')
   follow_symlinks=$(cfg ".jobs[$job_index].source.follow_symlinks // false")
   [[ $follow_symlinks == true ]] && tar_arguments+=(--dereference)
 
@@ -3328,10 +3389,12 @@ pack_files_job() {
   done
   tar_arguments+=(--null --files-from "$list_file")
 
-  if ! tar "${tar_arguments[@]+"${tar_arguments[@]}"}"; then
-    log error "kind=pack message=source-pack-failed"
-    return 3
+  if tar "${tar_arguments[@]+"${tar_arguments[@]}"}"; then
+    tar_status=0
+  else
+    tar_status=$?
   fi
+  handle_tar_pack_status "$tar_status" "$job_index" files || return 3
 }
 
 pack_compose_job() {
@@ -3359,6 +3422,21 @@ safe_manifest_entry_path() {
     && $path != */../* && $path != */.. && $path != *$'\n'* && $path != *$'\r'* && $path != *$'\t'* ]]
 }
 
+# A path is only rejected here for reasons that would genuinely corrupt
+# Backfort's own UTF-8 YAML manifest or its line-oriented tar listings: a
+# literal newline, carriage return, or tab (any of which would be
+# indistinguishable from a record separator), or bytes that are not valid
+# UTF-8. A path is never rejected merely because a component starts with a
+# space: every archive member is transform-prefixed with the literal string
+# "data" (never itself whitespace), so a leading space inside a name cannot
+# be confused with field-separator whitespace by any downstream reader.
+archive_member_path_is_unsupported() {
+  local archive_path=$1
+  [[ $archive_path == *$'\n'* || $archive_path == *$'\r'* || $archive_path == *$'\t'* ]] && return 0
+  [[ $archive_path =~ [^[:print:]] ]] || return 1
+  ! printf '%s' "$archive_path" | iconv --from-code=UTF-8 --to-code=UTF-8 >/dev/null 2>&1
+}
+
 sanitize_archive_members() {
   local LC_ALL=C
   local tar_file=$1
@@ -3368,6 +3446,7 @@ sanitize_archive_members() {
   local raw_listing="$WORK_DIRECTORY/archive-member-names.list"
   local record entry_type archive_path skipped=0
 
+  PACK_UNSUPPORTED_ENTRY_COUNT=0
   cat >"$helper" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -3385,10 +3464,9 @@ if [[ $archive_path != data && $archive_path != data/* ]]; then
 fi
 if [[ $archive_path == data ]]; then
   [[ $entry_type == d ]] || exit 1
-else
+elif [[ $unsupported == false ]]; then
   entry_path=${archive_path#data/}
-  if [[ $entry_path == *$'\n'* || $entry_path == *$'\r'* || $entry_path == *$'\t'* \
-    || $entry_path == ' '* || $entry_path == */' '* ]]; then
+  if [[ $entry_path == *$'\n'* || $entry_path == *$'\r'* || $entry_path == *$'\t'* ]]; then
     unsupported=true
   elif [[ $entry_path =~ [^[:print:]] ]] \
     && ! printf '%s' "$entry_path" | iconv --from-code=UTF-8 --to-code=UTF-8 >/dev/null 2>&1; then
@@ -3425,10 +3503,7 @@ EOF
       *) unsupported=true ;;
     esac
     archive_path="data/$archive_path"
-    if [[ $archive_path == *$'\n'* || $archive_path == *$'\r'* || $archive_path == *$'\t'* \
-      || $archive_path == data/' '* || $archive_path == */' '* ]]; then
-      unsupported=true
-    elif ! printf '%s' "$archive_path" | iconv --from-code=UTF-8 --to-code=UTF-8 >/dev/null 2>&1; then
+    if [[ $unsupported == false ]] && archive_member_path_is_unsupported "$archive_path"; then
       unsupported=true
     fi
     [[ $unsupported == true ]] || continue
@@ -3450,6 +3525,7 @@ EOF
   done <"$raw_listing"
 
   while IFS= read -r -d '' record; do
+    local quoted_path
     entry_type=${record%%$'\t'*}
     archive_path=${record#*$'\t'}
     [[ $entry_type =~ ^[A-Za-z]$ && $archive_path == data/* ]] || return 1
@@ -3457,10 +3533,17 @@ EOF
       return 1
     fi
     skipped=$((skipped + 1))
+    # %q shell-quotes the path so an embedded control byte or invalid UTF-8
+    # sequence (the very reason this member was flagged) cannot split or
+    # corrupt this structured log line.
+    printf -v quoted_path '%q' "${archive_path#data/}"
+    log error "kind=pack job=$(cfg ".jobs[$job_index].name") message=unsupported-archive-member-removed path=$quoted_path"
   done <"$records"
-  if ((skipped > 0)); then
-    log warning "kind=pack job=$(cfg ".jobs[$job_index].name") message=unsupported-entries-skipped count=$skipped"
-  fi
+  # A removed member means the archive no longer contains everything the
+  # source held. Backfort never reports that as a quiet success: pack_job
+  # reads this count and fails the job instead of publishing an incomplete
+  # backup.
+  PACK_UNSUPPORTED_ENTRY_COUNT=$skipped
 }
 
 hash_regular_archive_files() {
@@ -3563,6 +3646,10 @@ pack_job() {
 
   if ! sanitize_archive_members "$tar_file" "$job_index"; then
     log error "kind=pack job=$(cfg ".jobs[$job_index].name") message=archive-sanitize-failed"
+    return 3
+  fi
+  if ((PACK_UNSUPPORTED_ENTRY_COUNT > 0)); then
+    log error "kind=pack job=$(cfg ".jobs[$job_index].name") message=unsupported-entries-removed count=$PACK_UNSUPPORTED_ENTRY_COUNT"
     return 3
   fi
 

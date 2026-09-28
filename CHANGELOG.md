@@ -3,6 +3,45 @@
 All notable changes are documented here. Backfort follows semantic versioning
 once a release is tagged.
 
+## 1.1.0
+
+- Fixed a silent data-loss defect: a file the archive process could not read
+  (permission denied, an I/O error) no longer disappears quietly from a
+  backup that is still reported as `backup-succeeded`. `tar --create` no
+  longer runs with `--ignore-failed-read`; its own exit status now
+  distinguishes a real read failure (fails the job) from the tolerated race
+  of a file changing while it was being archived (still a warning-only
+  success). This applies to file-source jobs and to Compose named-volume and
+  bind-mount snapshots alike.
+- Fixed the archive sanitizer silently dropping a file or directory whose
+  name merely started with a space: every archive member is transform-
+  prefixed with the literal string `data`, which never itself starts with
+  whitespace, so a leading space was never actually a parsing hazard for
+  Backfort's own manifest. A name that genuinely cannot be represented (a
+  literal newline, carriage return, or tab, or bytes that are not valid
+  UTF-8) is still removed from the archive, but that removal now fails the
+  job with a clear `kind=pack message=unsupported-entries-removed` log line
+  instead of silently publishing an incomplete backup with only a warning.
+- Fixed compose database dump, restore, and named-volume snapshot commands
+  so a timed-out `command_timeout_seconds` actually stops the process
+  inside the container. Killing the host-side `docker`/`docker compose`
+  client (which is all a host-side `timeout` wrapper alone can do) does not
+  stop a process it started in the container's own PID namespace; the
+  actual command is now also wrapped with an in-container `timeout`, so a
+  runaway `pg_dump`, restore import, or volume `tar` is reliably reaped
+  instead of continuing to run, orphaned, after Backfort gives up on it.
+  This requires a `timeout` binary inside the database service image and
+  the Compose volume helper image (present in the common Debian- and
+  Alpine-based database and helper images).
+- Fixed the Telegram channel's plain-text retry so it can actually fire:
+  `curl --fail` discarded the response body on Telegram's own HTTP error
+  status for a rejected HTML message (for example an unescaped tag in a
+  custom template), so the `{"ok":false,...}` payload the retry logic
+  needed to see never reached it. `notification_curl_post` now reads the
+  HTTP status explicitly instead of relying on `curl --fail`, so a rejected
+  HTML alert is retried once as plain text as designed instead of being
+  silently lost.
+
 ## 1.0.0
 
 - Added `retention.min_keep`, a positive per-destination recovery floor that

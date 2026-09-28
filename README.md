@@ -436,7 +436,8 @@ source:
   # These are logical volume names from the Compose project. They must not be
   # live database volumes; database consistency comes from the dump below.
   volumes: [uploads, documents]
-  # Must already be present locally and contain GNU tar.
+  # Must already be present locally and contain GNU tar and a `timeout`
+  # binary (present in common Debian- and Alpine-based images).
   volume_helper_image: registry.example/backfort-volume-helper@sha256:REPLACE_WITH_DIGEST
 
   # Paths are relative to project_dir and must stay inside it.
@@ -460,16 +461,24 @@ selected services, selected volumes and the helper image. The helper runs with
 no network, a read-only root filesystem and a read-only source-volume mount.
 Backfort drops every Linux capability, then adds only `DAC_READ_SEARCH` so a
 trusted helper can archive application-owned `0700` directories. Choose a
-pinned image that includes `tar` and runs that command as root. The helper
-has no writable mount: Backfort captures its archive stream into its protected
-temporary workspace.
+pinned image that includes `tar` and a `timeout` binary and runs that command
+as root: the archive is wrapped in an in-container `timeout`, so it is the
+container's own PID 1 and self-terminates on expiry even if Backfort's host-
+side `docker` client is killed first. The helper has no writable mount:
+Backfort captures its archive stream into its protected temporary workspace.
 
 The `password_env` value is the **name** of a host environment variable, not a
 password. Backfort passes its value into the target container using the engine's
 password environment variable; it neither places the secret in its command
 arguments nor stores it in the bundle metadata. `command_timeout_seconds`
 applies to Docker/Compose checks, helper containers, container copies, and
-logical/native database dumps. Its default is one hour, and it accepts 1–86400
+logical/native database dumps. Each database dump, restore import, and the
+volume helper's own archive command additionally runs behind an in-container
+`timeout`, so a runaway process is reaped inside the container rather than
+merely detached from a killed host-side client; this requires the database
+service and volume helper images to provide a `timeout` binary (present in
+common Debian- and Alpine-based images). Its default is one hour, and it
+accepts 1–86400
 seconds so an operator can match the timeout to the largest expected dump.
 
 Database engine settings are as follows:

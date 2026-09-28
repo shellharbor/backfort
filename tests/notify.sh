@@ -7,7 +7,11 @@ PROJECT_DIRECTORY=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 TEST_DIRECTORY=$(mktemp -d)
 PORT=18976
 SERVER_PID=''
-PARSE_ERROR_STATE=''
+# The receiver is a long-lived process started once below. It cannot see a
+# shell "export" made later in this script, so the parse-error scenario is
+# armed and disarmed by creating and removing this file instead, which the
+# receiver checks fresh on every request.
+PARSE_ERROR_ARM_FILE="$TEST_DIRECTORY/telegram-parse-error.armed"
 
 cleanup() {
   if [[ -n $SERVER_PID ]]; then
@@ -39,6 +43,10 @@ from pathlib import Path
 import sys
 
 directory = Path(sys.argv[2])
+# Existence of this file is checked fresh on every request instead of being
+# read once, since a long-lived process never sees a shell "export" made
+# after it started.
+telegram_parse_error_armed = Path(sys.argv[3])
 counter = 0
 
 class Receiver(BaseHTTPRequestHandler):
@@ -46,7 +54,17 @@ class Receiver(BaseHTTPRequestHandler):
         global counter
         counter += 1
         length = int(self.headers.get("Content-Length", "0"))
-        (directory / f"{counter}.body").write_bytes(self.rfile.read(length))
+        body = self.rfile.read(length)
+        (directory / f"{counter}.body").write_bytes(body)
+        # Only the initial HTML attempt carries parse_mode; Backfort's own
+        # plain-text retry omits it, so this never rejects that retry too.
+        if self.path == "/telegram" and b'"parse_mode"' in body and telegram_parse_error_armed.exists():
+            payload = b'{"ok":false,"description":"Bad Request: can\'t parse entities"}'
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -57,12 +75,15 @@ class Receiver(BaseHTTPRequestHandler):
 
 ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Receiver).serve_forever()
 PY
-python3 "$TEST_DIRECTORY/receiver.py" "$PORT" "$REQUEST_DIRECTORY" &
+python3 "$TEST_DIRECTORY/receiver.py" "$PORT" "$REQUEST_DIRECTORY" "$PARSE_ERROR_ARM_FILE" &
 SERVER_PID=$!
 sleep 0.2
 kill -0 "$SERVER_PID"
 
-# This test-only proxy maps the Telegram endpoint to the local receiver.
+# This test-only proxy maps the Telegram endpoint to the local receiver. It
+# is a transparent proxy: the receiver above (not this shim) decides whether
+# a request gets a real 400 response, so the test exercises Backfort's own
+# HTTP status/body handling instead of a canned exit code.
 cat >"$BIN_DIRECTORY/curl" <<'EOF'
 #!/usr/bin/env bash
 set -Eeuo pipefail
@@ -78,12 +99,6 @@ for argument in "$@"; do
 done
 if [[ -n $config ]] && grep -q 'api.telegram.org' "$config"; then
   sed -i "s#^url = .*#url = \"http://127.0.0.1:$BACKFORT_TEST_NOTIFY_PORT/telegram\"#" "$config"
-  if [[ ${BACKFORT_TEST_TELEGRAM_PARSE_ERROR:-} == 1 && ! -e ${BACKFORT_TEST_TELEGRAM_PARSE_STATE:-} ]]; then
-    : >"$BACKFORT_TEST_TELEGRAM_PARSE_STATE"
-    "$BACKFORT_REAL_CURL" "$@" >/dev/null
-    printf '%s' '{"ok":false,"description":"Bad Request: parse entities"}'
-    exit 0
-  fi
 fi
 exec "$BACKFORT_REAL_CURL" "$@"
 EOF
@@ -113,8 +128,6 @@ export BACKFORT_TG_TOKEN='123456:telegram_test_token'
 export BACKFORT_TG_CHAT='-100123456'
 export BACKFORT_WEBHOOK_URL="http://127.0.0.1:$PORT/webhook"
 export BACKFORT_TEST_SMTP_DIRECTORY="$SMTP_DIRECTORY"
-PARSE_ERROR_STATE="$TEST_DIRECTORY/telegram-parse-error.once"
-export BACKFORT_TEST_TELEGRAM_PARSE_STATE="$PARSE_ERROR_STATE"
 
 reset_requests() {
   rm -f -- "$REQUEST_DIRECTORY"/*
@@ -221,7 +234,9 @@ mkdir -p "$STATE_DIRECTORY" "$BACKUP_DIRECTORY" "$BIN_DIRECTORY/failing"
 cat >"$BIN_DIRECTORY/failing/tar" <<'EOF'
 #!/usr/bin/env bash
 printf 'TOKEN=abcdef1234567890abcdef1234567890 0123456789abcdef0123456789abcdef\n' >&2
-exit 1
+# Exit 2 mirrors GNU tar's own "fatal error" contract (1 is reserved for the
+# tolerated "some files differ" race and must not fail a backup).
+exit 2
 EOF
 chmod 0755 "$BIN_DIRECTORY/failing/tar"
 if PATH="$BIN_DIRECTORY/failing:$PATH" "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run >/dev/null 2>"$TEST_DIRECTORY/failure.err"; then
@@ -401,13 +416,15 @@ grep -Fq "&lt;script&gt;&amp; \$(touch " <<<"$TEMPLATE_TEXT"
 grep -Fq '<code>sudo backfort.sh -c ' <<<"$TEMPLATE_TEXT"
 [[ ! -e $PWN_FILE ]]
 
-# Telegram rejects malformed HTML as a whole message. Backfort retries exactly
-# once as plain text so an alert is not lost because a trusted template tag or
-# an escaped entity is malformed at the transport boundary.
+# Telegram rejects malformed HTML as a whole message with a real HTTP 400
+# and an {"ok":false,...} body. Because notification_curl_post no longer
+# uses curl --fail (which would have discarded that body on the error
+# status), Backfort can read it and retry exactly once as plain text so an
+# alert is not lost because a trusted template tag or an escaped entity is
+# malformed at the transport boundary.
 reset_requests
 rm -rf -- "$STATE_DIRECTORY/notify_state"
-rm -f -- "$PARSE_ERROR_STATE"
-export BACKFORT_TEST_TELEGRAM_PARSE_ERROR=1
+: >"$PARSE_ERROR_ARM_FILE"
 BACKFORT_EVENT_JOB=notify BACKFORT_EVENT_ID='notify-host_notify_20260925T021500Z_a91f3c2d' \
   BACKFORT_EVENT_ERROR='<broken>&' BACKFORT_EVENT_EXIT_CODE=3 \
   "$TEST_DIRECTORY/template-helper.sh" "$PROJECT_DIRECTORY/backfort.sh" "$CONFIG_FILE"
@@ -418,7 +435,7 @@ if grep -Fq '<b>' "$(latest_body)"; then
   printf 'Telegram plain-text retry retained HTML markup\n' >&2
   exit 1
 fi
-unset BACKFORT_TEST_TELEGRAM_PARSE_ERROR
+rm -f -- "$PARSE_ERROR_ARM_FILE"
 
 # %q keeps the recovery command copy-paste safe even when -c has spaces.
 reset_requests

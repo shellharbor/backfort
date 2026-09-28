@@ -121,6 +121,15 @@ case "${1:-}" in
         done
         service=$1
         shift
+        # Backfort wraps the real command with an in-container timeout so a
+        # runaway process cannot outlive a killed docker CLI. Skip that
+        # fixed-shape prefix to reach the actual executable this fake
+        # dispatches on.
+        if [[ ${1:-} == timeout ]]; then
+          shift
+          [[ ${1:-} == -k ]] && shift 2
+          shift
+        fi
         executable=$1
         shift
         if [[ -n ${BACKFORT_FAKE_DOCKER_EXEC_SLEEP:-} ]]; then

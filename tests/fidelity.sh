@@ -119,10 +119,12 @@ SOURCE_BLOCKS=$(stat --format=%b "$SOURCE_DIRECTORY/sparse.bin")
 
 TZ=Pacific/Auckland run_backfort run
 TZ=America/Los_Angeles run_backfort run
-# GNU tar emits a "file changed as we read it" warning for live source data.
-# --ignore-failed-read must keep that warning from discarding a complete
-# version. A non-sparse fixture and frequent mtime changes make the warning
-# observable without changing its content.
+# GNU tar emits a "file changed as we read it" warning (exit status 1) for
+# live source data. handle_tar_pack_status must tolerate that specific
+# status and still publish a complete version; a different, unreadable file
+# instead fails the job outright (see tests/unreadable-file.sh). A
+# non-sparse fixture and frequent mtime changes make the warning observable
+# without changing its content.
 LIVE_FILE="$SOURCE_DIRECTORY/live-change.bin"
 dd if=/dev/urandom of="$LIVE_FILE" bs=1M count=32 status=none
 (
@@ -162,9 +164,15 @@ MTIME_TWO=$(run_privileged env BF_STABLE_PATH="$STABLE_MANIFEST_PATH" yq eval -r
 
 # Backfort runs the archive process with a restrictive umask, so this trace is
 # root-owned when the test exercises privileged ownership restoration.
+# --ignore-failed-read is deliberately absent: it would silently drop an
+# unreadable file from the archive while still reporting success (see
+# tests/unreadable-file.sh).
 run_privileged grep -q -- '--xattrs' "$TAR_LOG"
 run_privileged grep -q -- '--acls' "$TAR_LOG"
 run_privileged grep -q -- '--sparse' "$TAR_LOG"
-run_privileged grep -q -- '--ignore-failed-read' "$TAR_LOG"
+if run_privileged grep -q -- '--ignore-failed-read' "$TAR_LOG"; then
+  printf 'tar invocation must not use --ignore-failed-read\n' >&2
+  exit 1
+fi
 
 printf 'Backfort restore fidelity test passed.\n'

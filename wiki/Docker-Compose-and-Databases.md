@@ -63,11 +63,13 @@ volume, and no writable mount. It captures the helper's archive stream itself
 inside its protected temporary workspace. The helper has no Linux capabilities
 except `DAC_READ_SEARCH`. That single capability lets a trusted GNU `tar`
 helper traverse application-owned `0700` volume directories without granting
-write, network, or general privilege. Pin an image that includes GNU `tar` and
-runs the helper command as root. Backfort requires its support for ACLs,
-extended attributes and sparse files. Run `backfort.sh doctor` after setting
-this up: it checks Docker and reports unavailable prerequisites before the
-backup window.
+write, network, or general privilege. Pin an image that includes GNU `tar`, a
+`timeout` binary, and runs the helper command as root. Backfort requires its
+support for ACLs, extended attributes and sparse files. The archive command
+runs behind an in-container `timeout`, so it is the helper's own PID 1 and
+self-terminates on expiry even if Backfort's host-side `docker` client is
+killed first. Run `backfort.sh doctor` after setting this up: it checks
+Docker and reports unavailable prerequisites before the backup window.
 
 ## Database dumps
 
@@ -128,6 +130,12 @@ jobs continue. No dump container is started for that failed job.
 including `exec` dump clients, native MS SQL/Oracle work, helper containers and
 container copies. Set it above the normal duration of your largest dump but
 below the point where a hung client would block later backups indefinitely.
+Each `exec` dump/restore client and the volume helper's archive command also
+run behind an in-container `timeout` using the same setting, so a runaway
+process is reaped inside the container rather than merely detached from a
+killed host-side client. This requires a `timeout` binary inside the database
+service and volume helper images (present in common Debian- and Alpine-based
+images).
 
 ## Recommended recovery sequence
 

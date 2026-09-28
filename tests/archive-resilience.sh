@@ -25,7 +25,6 @@ printf 'portable data\n' >"$SOURCE_DIRECTORY/portable.txt"
 mkfifo "$SOURCE_DIRECTORY/live.pipe"
 printf 'tab name\n' >"$SOURCE_DIRECTORY/tab"$'\t'"name"
 printf 'newline name\n' >"$SOURCE_DIRECTORY/line"$'\n'"name"
-printf 'leading name\n' >"$SOURCE_DIRECTORY/ leading-name"
 printf -v INVALID_NAME '%s' "$SOURCE_DIRECTORY/invalid-"$'\xff'
 printf 'non-utf8 name\n' >"$INVALID_NAME"
 
@@ -54,27 +53,40 @@ jobs:
     retention: {keep_last: 2, keep_daily: 0, keep_weekly: 0, keep_monthly: 0}
 EOF
 
-if ! "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run >"$TEST_DIRECTORY/run.out" 2>"$TEST_DIRECTORY/run.err"; then
+complete_count() {
+  find "$BACKUP_DIRECTORY" -maxdepth 1 -name '*.complete' -type f | wc -l
+}
+
+# A non-regular FIFO, and file names containing a tab, a newline, or invalid
+# UTF-8 bytes would each corrupt Backfort's own line-oriented tar listing or
+# UTF-8 YAML manifest. The whole job fails instead of silently publishing a
+# backup that is missing all four of them and reporting it as a success (a
+# leading space alone, by contrast, is not a hazard here: see
+# tests/unreadable-file.sh, which proves that name is archived unchanged).
+if "$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run >"$TEST_DIRECTORY/run.out" 2>"$TEST_DIRECTORY/run.err"; then
+  printf 'expected unsupported archive members to fail the backup\n' >&2
   cat "$TEST_DIRECTORY/run.err" >&2
   exit 1
+else
+  RUN_STATUS=$?
 fi
-grep -q 'message=unsupported-entries-skipped' "$TEST_DIRECTORY/run.err"
-"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" verify latest --job resilient --full
-"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" restore latest --job resilient --to "$RESTORE_DIRECTORY"
-
-RESTORED_SOURCE="$RESTORE_DIRECTORY$SOURCE_DIRECTORY"
-cmp "$SOURCE_DIRECTORY/portable.txt" "$RESTORED_SOURCE/portable.txt"
-[[ ! -e "$RESTORED_SOURCE/live.pipe" ]]
-[[ ! -e "$RESTORED_SOURCE/tab"$'\t'"name" ]]
-[[ ! -e "$RESTORED_SOURCE/line"$'\n'"name" ]]
-[[ ! -e "$RESTORED_SOURCE/ leading-name" ]]
-[[ ! -e "$RESTORED_SOURCE/invalid-"$'\xff' ]]
-
-METADATA_FILE=$(find "$BACKUP_DIRECTORY" -maxdepth 1 -name '*.metadata.json' -print -quit)
-[[ $(yq eval '.entries | length' "$METADATA_FILE") -gt 0 ]]
-if yq eval -r '.entries[].path' "$METADATA_FILE" | grep -Eq $'(^ |\t|\r)'; then
-  printf 'manifest retained an unsupported path\n' >&2
+[[ $RUN_STATUS -eq 3 ]]
+grep -Fq 'message=unsupported-entries-removed count=4' "$TEST_DIRECTORY/run.err"
+[[ $(grep -Fc 'message=unsupported-archive-member-removed' "$TEST_DIRECTORY/run.err") -eq 4 ]]
+if grep -Fq 'backup-succeeded' "$TEST_DIRECTORY/run.err"; then
+  printf 'a backup missing an unsupported member must never report success\n' >&2
   exit 1
 fi
+[[ $(complete_count) -eq 0 ]]
+
+# Once the offending paths are removed, the job succeeds normally and the
+# one portable, ordinary file restores unchanged.
+rm -f -- "$SOURCE_DIRECTORY/live.pipe" "$SOURCE_DIRECTORY/tab"$'\t'"name" \
+  "$SOURCE_DIRECTORY/line"$'\n'"name" "$INVALID_NAME"
+"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" run
+"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" verify latest --job resilient --full
+"$PROJECT_DIRECTORY/backfort.sh" -c "$CONFIG_FILE" restore latest --job resilient --to "$RESTORE_DIRECTORY"
+cmp "$SOURCE_DIRECTORY/portable.txt" "$RESTORE_DIRECTORY$SOURCE_DIRECTORY/portable.txt"
+[[ $(complete_count) -eq 1 ]]
 
 printf 'Backfort archive resilience test passed.\n'
