@@ -3,7 +3,7 @@ name: backfort
 description: One-shot Backfort backup, retention and recovery jobs for mounted PVCs
 type: application
 version: 0.1.0
-appVersion: "1.1.0"
+appVersion: "1.2.0"
 kubeVersion: ">=1.31.0-0"
 home: https://github.com/shellharbor/backfort
 sources:

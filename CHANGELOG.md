@@ -3,7 +3,7 @@
 All notable changes are documented here. Backfort follows semantic versioning
 once a release is tagged.
 
-## Unreleased
+## 1.2.0
 
 - Fixed file-source tar transforms rewriting symbolic-link targets with the
   internal `data/` prefix. New backups preserve relative, absolute and dangling

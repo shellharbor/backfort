@@ -1,4 +1,4 @@
-# Valid Backfort 1.1 configuration: a local backup and Prometheus metrics for
+# Valid Backfort 1.2 configuration: a local backup and Prometheus metrics for
 # node_exporter's textfile collector. Create the metrics directory separately.
 
 version: 1

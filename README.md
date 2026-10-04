@@ -133,8 +133,8 @@ creates the same portable bundles as a native installation. Images are
 published for `linux/amd64` and `linux/arm64` to GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/shellharbor/backfort:1.1.0
-docker run --rm ghcr.io/shellharbor/backfort:1.1.0 --version
+docker pull ghcr.io/shellharbor/backfort:1.2.0
+docker run --rm ghcr.io/shellharbor/backfort:1.2.0 --version
 ```
 
 For a durable setup, copy the sample Compose file and its matching config into
@@ -176,8 +176,8 @@ mounted read-only. Use it only for a trusted Compose job and never for a
 normal files-only backup. The complete deployment, secret, recovery and
 upgrade guidance is in [Docker deployment](wiki/Docker-Deployment.md).
 
-Release tags are immutable exact versions such as `1.1.0`. Stable releases
-also move `1.1`, `1`, and `latest`; pin an exact version or digest for a
+Release tags are immutable exact versions such as `1.2.0`. Stable releases
+also move `1.2`, `1`, and `latest`; pin an exact version or digest for a
 repeatable run and retain the `backfort-state` volume during upgrades. Docker
 Hub publication is optional and occurs only when the repository has both
 `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` release secrets; GHCR is the

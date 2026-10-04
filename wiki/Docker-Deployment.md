@@ -10,8 +10,8 @@ The canonical image is `ghcr.io/shellharbor/backfort`. Stable releases publish
 multi-architecture manifests for `linux/amd64` and `linux/arm64`:
 
 ```bash
-docker pull ghcr.io/shellharbor/backfort:1.1.0
-docker run --rm ghcr.io/shellharbor/backfort:1.1.0 --version
+docker pull ghcr.io/shellharbor/backfort:1.2.0
+docker run --rm ghcr.io/shellharbor/backfort:1.2.0 --version
 ```
 
 Use an exact version (or an image digest) in an operational Compose file.

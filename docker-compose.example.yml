@@ -8,7 +8,7 @@
 # restart must never create an unexpected additional backup.
 services:
   backfort:
-    image: ghcr.io/shellharbor/backfort:1.1.0
+    image: ghcr.io/shellharbor/backfort:1.2.0
     restart: "no"
     init: true
     read_only: true

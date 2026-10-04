@@ -1,6 +1,6 @@
 # Backfort examples
 
-Each top-level YAML file is valid Backfort 1.1 configuration after you replace
+Each top-level YAML file is valid Backfort 1.2 configuration after you replace
 the example paths, host ID and rclone remote name. Run `doctor` before using a
 configuration for the first time:
 
