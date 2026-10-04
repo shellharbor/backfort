@@ -3,6 +3,9 @@ version: 1
 settings:
   # Stable identifier written into every backup ID and manifest.
   host_id: server-01
+  # Container deployments use the same keys, but every path is inside the
+  # container and must have an explicit persistent or bind mount. See
+  # wiki/Docker-Deployment.md and examples/docker-files-local.yaml.
   state_directory: /var/lib/backfort
   temp_directory: /var/tmp/backfort
   lock_file: /run/backfort.lock

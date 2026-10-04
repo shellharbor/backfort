@@ -1,4 +1,4 @@
-# Valid Backfort 0.5 configuration: encrypted offsite copy. The recipient and
+# Valid Backfort 1.1 configuration: encrypted offsite copy. The recipient and
 # private identity are environment-variable references, never secret values.
 # A production writer may omit BACKFORT_AGE_IDENTITY_FILE; it can create and
 # quick-verify backups but cannot decrypt or restore them.

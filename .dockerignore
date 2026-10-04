@@ -1,0 +1,45 @@
+.git
+.github
+.ai
+.cursor
+.idea
+.codex
+.agents
+.tmp
+
+# Source and test artifacts are not part of the production image.
+docs
+charts
+examples
+tests
+wiki
+*.md
+
+# Never make local runtime configuration or credentials part of a build context.
+config.yaml
+config.local.yaml
+config.*.local.yaml
+config.secret.yaml
+config.*.secret.yaml
+.env
+.env.*
+environment
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.credentials
+*.secret
+
+# Local runtime data and editor output.
+backups
+build
+coverage
+dist
+logs
+release
+run
+state
+temp
+tmp

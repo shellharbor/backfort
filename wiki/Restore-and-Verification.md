@@ -70,6 +70,19 @@ a disposable host or an explicit recovery directory first. Never overwrite a
 live deployment until the recovered files, ownership and application start-up
 have been checked.
 
+New file-source backups preserve symbolic-link target text rather than
+prefixing it with the archive's internal `data/` path. Relative, absolute and
+dangling links are preserved when `follow_symlinks: false`; explicit
+dereferencing instead captures readable target data. Hard-link relationships
+remain intact. Absolute links can still point outside the staging directory:
+inspect their targets before following them on a recovery host. Bundles created
+before this fix are not automatically rewritten—review their links and create
+a fresh recovery point. `tests/symlinks.sh` covers both policies.
+
+For PVC-file recovery Jobs, see [Kubernetes Deployment](Kubernetes-Deployment):
+use the same host/config/lock, a separate recovery claim and a new or empty
+target beneath `/restore`.
+
 Backfort restores numeric owners, POSIX ACLs, extended attributes (including
 Linux file capabilities), sparse extents, and timestamps. Use a privileged
 recovery account when owner fidelity is required; an unprivileged account may

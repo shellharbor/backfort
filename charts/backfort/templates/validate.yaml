@@ -1,0 +1,81 @@
+{{- range .Values.config.jobs -}}
+{{- if ne .source.type "files" -}}
+{{- fail "Kubernetes chart supports source.type=files on mounted PVCs; docker_compose requires a Docker host" -}}
+{{- end -}}
+{{- end -}}
+{{- if not (regexMatch "^/var/lib/backfort/([a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+$" .Values.config.settings.state_directory) -}}
+{{- fail "config.settings.state_directory must be below /var/lib/backfort/ on the shared state PVC" -}}
+{{- end -}}
+{{- if not (regexMatch "^/var/lib/backfort/([a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-][a-zA-Z0-9_.-]*$" .Values.config.settings.lock_file) -}}
+{{- fail "config.settings.lock_file must be below /var/lib/backfort/ on the shared state PVC" -}}
+{{- end -}}
+{{- if not (regexMatch "^/var/tmp/backfort/([a-zA-Z0-9_-]+/)*[a-zA-Z0-9_-]+$" .Values.config.settings.temp_directory) -}}
+{{- fail "config.settings.temp_directory must be below /var/tmp/backfort/" -}}
+{{- end -}}
+{{- $names := dict -}}
+{{- $paths := dict -}}
+{{- $stateClaim := include "backfort.claim" (dict "root" . "kind" "state") -}}
+{{- $backupClaim := include "backfort.claim" (dict "root" . "kind" "backups") -}}
+{{- if and .Values.storage.backups.enabled (eq $stateClaim $backupClaim) -}}
+{{- fail "state and backups must use separate PVCs" -}}
+{{- end -}}
+{{- range .Values.sources -}}
+{{- if or (eq .claimName $stateClaim) (and $.Values.storage.backups.enabled (eq .claimName $backupClaim)) -}}
+{{- fail "source PVC must differ from state and backup PVCs" -}}
+{{- end -}}
+{{- if and $.Values.manual.restoreClaim (eq .claimName $.Values.manual.restoreClaim) -}}
+{{- fail "manual.restoreClaim must not be a live source PVC" -}}
+{{- end -}}
+{{- if or (hasKey $names .name) (hasKey $paths .mountPath) -}}
+{{- fail "sources must have unique names and mountPath values" -}}
+{{- end -}}
+{{- $_ := set $names .name true -}}
+{{- $_ := set $paths .mountPath true -}}
+{{- end -}}
+{{- if and .Values.manual.restoreClaim (or (eq .Values.manual.restoreClaim $stateClaim) (and .Values.storage.backups.enabled (eq .Values.manual.restoreClaim $backupClaim))) -}}
+{{- fail "manual.restoreClaim must differ from state and backup PVCs" -}}
+{{- end -}}
+{{- if .Values.manual.enabled -}}
+{{- $args := .Values.manual.args -}}
+{{- $commandIndex := 0 -}}
+{{- if has (index $args 0) (list "--dry-run" "-n") -}}
+{{- $commandIndex = 1 -}}
+{{- end -}}
+{{- if le (len $args) $commandIndex -}}
+{{- fail "manual.args requires an explicit supported Backfort command" -}}
+{{- end -}}
+{{- $command := index $args $commandIndex -}}
+{{- if not (has $command (list "doctor" "run" "verify" "restore" "prune" "list" "status" "watchdog" "diff" "pin" "unpin" "delete" "--help" "-h" "--version" "-V")) -}}
+{{- fail "manual.args must start with a supported Backfort command (optional --dry-run or -n); config overrides and quick/Compose commands are not supported" -}}
+{{- end -}}
+{{- if eq $command "restore" -}}
+{{- if not .Values.manual.restoreClaim -}}
+{{- fail "manual restore requires an isolated manual.restoreClaim" -}}
+{{- end -}}
+{{- $targets := 0 -}}
+{{- range $index, $argument := $args -}}
+{{- if eq $argument "--to" -}}
+{{- $targets = add $targets 1 -}}
+{{- $next := int (add $index 1) -}}
+{{- if ge $next (len $args) -}}
+{{- fail "manual restore requires --to /restore or a safe child of /restore" -}}
+{{- end -}}
+{{- if not (regexMatch "^/restore(/[a-zA-Z0-9_-][a-zA-Z0-9_.-]*)*$" (index $args $next)) -}}
+{{- fail "manual restore requires --to /restore or a safe child of /restore" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if ne (int $targets) 1 -}}
+{{- fail "manual restore requires exactly one --to target on the isolated recovery PVC" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $names = dict -}}
+{{- $paths = dict -}}
+{{- range .Values.secretMounts -}}
+{{- if or (hasKey $names .name) (hasKey $paths .mountPath) -}}
+{{- fail "secretMounts must have unique names and mountPath values" -}}
+{{- end -}}
+{{- $_ := set $names .name true -}}
+{{- $_ := set $paths .mountPath true -}}
+{{- end -}}

@@ -3,7 +3,7 @@
 Backfort is a one-shot Bash backup and recovery tool for Linux. It creates a
 complete backup, verifies enough of it to publish safely, writes independent
 copies to local or rclone storage, and exits. It is intentionally not a daemon:
-cron or a systemd timer decides when it runs.
+cron, a systemd timer or Kubernetes CronJob decides when it runs.
 
 Backfort protects ordinary directories, Docker Compose projects, selected
 volumes and bind mounts, and database dumps. Every completed copy consists of
@@ -24,6 +24,10 @@ layout, use `sudo /opt/backfort/backfort.sh`; from a cloned checkout, use
    usable before an incident.
 5. [Monitoring and Metrics](Monitoring-and-Metrics) — expose run outcomes to
    Prometheus and add independent freshness checks.
+6. [Docker Deployment](Docker-Deployment) — run the same plan as a secure,
+   scheduled one-shot container job.
+7. [Kubernetes Deployment](Kubernetes-Deployment) — Helm Jobs/CronJobs for
+   explicit PVC files, offsite copies and isolated recovery drills.
 
 For immediate work without preparing YAML first, use
 [Quick Backups](Quick-Backups). For application stacks, read
@@ -54,9 +58,15 @@ workflow checks local Markdown links across the README, Wiki sources, examples,
 and community documents, plus whitespace in changed files. CodeQL reviews
 GitHub Actions workflow definitions;
 OpenSSF Scorecard publishes supply-chain findings; Dependabot proposes grouped
-weekly GitHub Actions updates. A `vX.Y.Z` tag is accepted only when the CLI
+weekly GitHub Actions and Docker base-image updates. A `vX.Y.Z` tag is accepted only when the CLI
 version and the matching Changelog heading are release-ready. The repository
 README links to the live workflow results.
+
+A dedicated Kubernetes workflow lints the Helm chart, exercises its rendering
+and safety gates, builds the actual image, and checks PVC backup/full
+verification/metadata recovery, readonly sources, shared locks, error paths and
+non-root operation in a disposable kind cluster. It does not access a user's
+cluster or certify every CSI driver/admission policy.
 
 The source-control baseline keeps tracked text in LF form so the Bash CLI works
 the same from Windows and Linux checkouts. Local IDE metadata such as `.idea/`

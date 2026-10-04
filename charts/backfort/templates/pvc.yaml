@@ -1,0 +1,23 @@
+{{- range $kind := list "state" "backups" }}
+{{- $storage := index $.Values.storage $kind }}
+{{- if and (not $storage.existingClaim) (or (eq $kind "state") $storage.enabled) }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "backfort.claim" (dict "root" $ "kind" $kind) }}
+  labels:
+    {{- include "backfort.labels" $ | nindent 4 }}
+  annotations:
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    {{- toYaml $storage.accessModes | nindent 4 }}
+  {{- if ne $storage.storageClass nil }}
+  storageClassName: {{ $storage.storageClass | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ $storage.size | quote }}
+{{- end }}
+{{- end }}

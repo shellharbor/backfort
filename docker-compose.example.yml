@@ -1,0 +1,46 @@
+# Copy this file and examples/docker-files-local.yaml into one protected
+# deployment directory as docker-compose.yml and config.yaml. Set
+# BACKFORT_SOURCE_DIR and BACKFORT_BACKUP_DIR to absolute host paths, then use:
+#   docker compose run --rm backfort doctor
+#   docker compose run --rm backfort run
+#
+# Backfort is a one-shot job. `restart: "no"` is intentional: a container
+# restart must never create an unexpected additional backup.
+services:
+  backfort:
+    image: ghcr.io/shellharbor/backfort:1.1.0
+    restart: "no"
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m
+    volumes:
+      - ./config.yaml:/etc/backfort/config.yaml:ro
+      - backfort-state:/var/lib/backfort
+      - backfort-work:/var/tmp/backfort
+      - ${BACKFORT_SOURCE_DIR:?Set an absolute source directory}:/source:ro
+      - ${BACKFORT_BACKUP_DIR:?Set an absolute backup directory}:/backups
+
+    # This default runs `doctor` and exits. Override per invocation with
+    # `docker compose run --rm backfort run` or another Backfort CLI command.
+    command: ["-c", "/etc/backfort/config.yaml", "doctor"]
+
+    # For a files-only job whose mounted paths are already owned by this
+    # account, uncomment a non-root user. Do not use it for owner-preserving
+    # restores or sources that require root/DAC access.
+    # user: "1000:1000"
+
+    # docker_compose jobs additionally need the Docker socket and their
+    # project directory mounted at the SAME absolute host path, for example:
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+    #   - /srv/crm:/srv/crm:ro
+    # group_add: ["${DOCKER_GID:?Set to stat -c '%g' /var/run/docker.sock}"]
+    # Mounting Docker's socket is host-root-equivalent. Do it only for trusted
+    # Compose jobs, never for ordinary file backups.
+
+volumes:
+  backfort-state:
+  backfort-work:

@@ -1,4 +1,4 @@
-# Valid Backfort 0.5 configuration: GPG public-key encryption for an offsite
+# Valid Backfort 1.1 configuration: GPG public-key encryption for an offsite
 # copy. Import the two verified public keys into the account that runs Backfort
 # first. This server intentionally has no private key and can therefore create
 # backups and quick-verify them, but cannot decrypt them.

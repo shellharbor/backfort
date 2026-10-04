@@ -1,0 +1,26 @@
+# Helm values for an S3/cloud-only destination. Configure the already-existing
+# backfort-rclone Secret with its rclone.conf key. No credentials in this file.
+storage:
+  backups:
+    enabled: false
+env:
+  RCLONE_CONFIG: /run/secrets/rclone/rclone.conf
+secretMounts:
+  - name: rclone
+    secretName: backfort-rclone
+    mountPath: /run/secrets/rclone
+config:
+  destinations:
+    - name: offsite
+      type: rclone
+      remote: cloudflare-r2
+      path: backups-bucket/backfort/cluster-a-application
+  jobs:
+    - name: application-files
+      source: {type: files, paths: [/source], exclude: ["*.log"], follow_symlinks: false}
+      destinations: [offsite]
+      success: {min_copies: 1}
+      compression: {method: gzip, level: 6}
+      encryption: {method: none}
+      signing: {method: none}
+      retention: {keep_last: 3, keep_daily: 7, keep_weekly: 4, keep_monthly: 6, min_keep: 1}

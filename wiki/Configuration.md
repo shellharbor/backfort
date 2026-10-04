@@ -62,6 +62,42 @@ ID remains an operator-approved way to recover a copy made by another host.
 All filesystem paths must be absolute. Backfort rejects `/`, traversal (`..`),
 and self-referential source/destination layouts.
 
+### Container path mapping
+
+Docker does not change the YAML schema, but it changes which filesystem each
+absolute path names. The paths in the configuration must name locations
+**inside** the Backfort container, and each one must be backed by a deliberate
+mount. For example, the maintained Docker example maps `/source` read-only,
+`/backups` read-write, `/var/lib/backfort` to persistent state, and
+`/var/tmp/backfort` to persistent working space:
+
+```yaml
+settings:
+  state_directory: /var/lib/backfort
+  temp_directory: /var/tmp/backfort
+  lock_file: /var/lib/backfort/backfort.lock
+destinations:
+  - name: local
+    type: local
+    path: /backups
+jobs:
+  - name: container-files
+    source: {type: files, paths: [/source], exclude: [], follow_symlinks: false}
+```
+
+The state, temporary work and local destination paths need writable persistent
+mounts; the source normally needs a read-only mount. Do not point a container
+job at an unmounted host path and assume it sees the host data. See [Docker
+Deployment](Docker-Deployment) for the Compose sample, filesystem matrix and
+security boundary.
+
+Kubernetes uses the same YAML under the Helm chart's `config` value; Helm
+deployment values are a separate schema. State and lock live below
+`/var/lib/backfort/` on a shared PVC, work below `/var/tmp/backfort/` on a
+disk-backed ephemeral volume, and each source is an explicit readonly PVC.
+Credentials reference existing Secrets. Use [Kubernetes Deployment](Kubernetes-Deployment)
+for the namespace, access-mode, scheduling and recovery contract.
+
 ## Prometheus textfile metrics
 
 The optional `metrics.prometheus` block publishes the outcome of each

@@ -1,0 +1,8 @@
+# Apply only templates/manual-job.yaml to an existing release, with matching
+# original config/state/backups values. Never mount the live application PVC
+# as the restoreClaim. /restore/result must be new or empty.
+manual:
+  enabled: true
+  name: restore-drill-01
+  args: [restore, latest, --job, application-files, --to, /restore/result]
+  restoreClaim: backfort-recovery

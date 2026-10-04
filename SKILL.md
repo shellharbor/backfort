@@ -1,6 +1,6 @@
 ---
 name: backfort
-description: Implement, review, test, or document Backfort's Linux backup and recovery workflow, including YAML configuration, lifecycle hooks, local and rclone destinations, Docker Compose backups and recovery assistance, databases, retention, notifications, and Prometheus textfile metrics. Use for changes inside the Backfort repository; do not use for generic backup advice unrelated to this codebase.
+description: Implement, review, test, or document Backfort's Linux backup and recovery workflow, including YAML configuration, native and Docker distribution, Kubernetes Helm PVC-file Jobs, lifecycle hooks, local and rclone destinations, Docker Compose backups and recovery assistance, databases, retention, notifications, and Prometheus textfile metrics. Use for changes inside the Backfort repository; do not use for generic backup advice unrelated to this codebase.
 metadata:
   short-description: Maintain the Backfort backup tool
 ---
@@ -9,7 +9,7 @@ metadata:
 
 Backfort is a one-shot Bash backup and recovery tool for Linux. Its public
 entry point is `backfort.sh`; YAML is the durable configuration contract.
-Scheduled execution belongs to cron or systemd, not to a resident Backfort
+Scheduled execution belongs to cron, systemd or Kubernetes CronJob, not to a resident Backfort
 daemon.
 
 ## Start with the current contract
@@ -23,6 +23,10 @@ product sources:
 - `config.example.yaml` — complete configuration reference;
 - `tests/*.sh` — hermetic executable behavior examples;
 - `examples/` — user-adaptable configuration examples;
+- `Dockerfile`, `.dockerignore`, and `docker-compose.example.yml` — the
+  production container distribution and deployment contract;
+- `charts/backfort`, `examples/kubernetes` and `tests/kubernetes_*.py` — Helm
+  PVC-file deployment, values examples and rendering/real-kind checks;
 - `.gitattributes` — LF normalization for portable shell, YAML and Markdown;
 - `README.md` and `wiki/` — public operating documentation;
 - `CONTRIBUTING.md`, `SECURITY.md`, `CODE_OF_CONDUCT.md`, and `SUPPORT.md` —
@@ -60,6 +64,11 @@ ignored workspace state, not a project artifact.
   than silently restored or allowed to make a whole backup fail.
 - Keep normal restore staged: it requires a new or empty explicit directory.
   Do not introduce in-place restore or a force-overwrite path casually.
+- File-source tar transforms prefix members and hard-link references only,
+  never symbolic-link target text. Preserve relative/absolute/dangling targets
+  unless follow_symlinks explicitly requests dereferencing; cover both modes
+  with `tests/symlinks.sh`. Do not silently rewrite existing bundles to repair
+  older link targets.
 - `success.min_copies` determines success across independent destinations. A
   partial copy result is distinct from a failed copy policy and must retain its
   documented exit code.
@@ -71,6 +80,32 @@ ignored workspace state, not a project artifact.
 - Docker Compose backups are explicit. Never infer files, volumes, bind mounts
   or database services from an image or a Compose file. Database volumes do not
   replace logical engine dumps.
+- Docker distribution is an additional way to run the same one-shot CLI, not a
+  daemon or a second backup format. Keep its default command as `doctor`; do
+  not add a synthetic Docker `HEALTHCHECK`, automatic restarts, or in-container
+  scheduling. A Docker `doctor` exit status is its readiness result.
+- Container architecture must follow `.ai/40-containers.md` and remain
+  Kubernetes-ready. Plan finite Backfort tasks as Job/CronJob workloads with
+  explicit state/storage, concurrency and retry constraints. Document the
+  Compose adapter's host Docker dependency; do not claim a Kubernetes-native
+  backup adapter beyond the implemented and verified scope. Read
+  `wiki/Docker-Deployment.md` and `wiki/Kubernetes-Deployment.md` for the
+  separate Docker-host and mounted-PVC deployment contracts.
+- The Helm chart supports explicit PVC files only, not API discovery, CSI
+  snapshot orchestration or database-Pod dumps. Preserve tokenless workloads,
+  readonly sources, suspended-first backup/prune schedules, one Pod with no
+  automatic retry, finite deadlines and the persistent shared lock. CronJob
+  Forbid is not cross-Job coordination or an exactly-once guarantee. Never
+  restore to a live/source/state/backup claim or introduce hostPath/socket/RBAC
+  privileges to work around an incompatible CSI filesystem/access mode.
+- The production image intentionally runs root-capable to preserve numeric
+  owners, ACLs, xattrs and sparse files during full recovery. A documented
+  non-root files-only deployment is allowed only when its explicit host mounts
+  support it; never claim it preserves full recovery fidelity.
+- For containerized `docker_compose` jobs, the project directory must be
+  mounted at its identical absolute host path alongside an intentionally
+  granted Docker socket. A Docker socket is host-root-equivalent even mounted
+  read-only; files-only jobs must not receive it.
 - Compose volume helpers remain networkless with a read-only root filesystem,
   source mount and no writable mount; Backfort owns the archive-stream output
   in its protected workspace. Keep the capability set minimal:
@@ -137,6 +172,8 @@ ignored workspace state, not a project artifact.
 | Prometheus metrics | schema and readiness validation, atomic textfile writer, `tests/metrics.sh`, README, `Configuration`, `Monitoring and Metrics`, and troubleshooting Wiki pages |
 | Lifecycle hook or timeout | validator and preflight, hook execution and signal cleanup, `tests/hooks.sh`, README, `Configuration`, and `Automation-and-Notifications` Wiki pages |
 | GitHub automation or badge | `.github/workflows/`, `.github/dependabot.yml`, README badges, `CHANGELOG.md`, and Wiki maintainer guidance; never add a badge without its real workflow or public service |
+| Docker image or deployment | `Dockerfile`, `.dockerignore`, `docker-compose.example.yml`, `examples/docker-files-local.yaml`, `tests/docker-image.sh`, README, `Docker-Deployment`, configuration, Compose, troubleshooting Wiki pages, and release workflow |
+| Kubernetes deployment | `charts/backfort` (templates/values/schema), `examples/kubernetes`, `tests/kubernetes_chart.py`, `tests/kubernetes_integration.py`, `.github/workflows/kubernetes.yml`, README, `Kubernetes-Deployment`, configuration/troubleshooting Wiki pages and `docs/ADR-002-kubernetes-jobs.md` |
 | Local/rclone bundle behavior | atomic publish, host-scoped automatic discovery, list/verify/restore/prune/delete behavior, smoke tests, recovery and storage docs |
 | Compose or database adapter | Compose validation, fake Docker test, real PostgreSQL/MySQL recovery integration, command timeout behavior, recovery instructions, `Docker-Compose-and-Databases`, `Compose-Migration`, and `Restore-and-Verification` Wiki pages |
 | Security, encryption, signing or notifications | validation, negative tests, redaction/log review, README and relevant Wiki safety/automation pages |
@@ -166,8 +203,23 @@ Run the specialized test when its surface changes: `quick.sh`,
 `crypto-smoke.sh`, `gpg-asymmetric.sh`, `file-hashes.sh`, `watchdog.sh`, `diff.sh`, `pinned.sh`,
 `delete-period.sh`, `pick.sh`, `notify.sh`, `hooks.sh`, `metrics.sh`,
 `preflight-failure.sh`, `host-scope.sh`, `workspace-failure.sh`,
-`archive-resilience.sh`, `fidelity.sh`, `config-cache.sh`, `bash43-runtime.sh`, or
+`archive-resilience.sh`, `fidelity.sh`, `symlinks.sh`, `config-cache.sh`, `bash43-runtime.sh`, or
 `local-durability.sh`.
+For container distribution changes, also build the image and run
+`bash tests/docker-image.sh IMAGE`; this covers image dependencies, `doctor`,
+backup, full verification, staged restore, and invalid configuration. Validate
+the Compose example before documenting it as runnable.
+For Kubernetes changes, run `helm lint charts/backfort --strict` and
+`python tests/kubernetes_chart.py` with Helm 3 and PyYAML 6.0.2. Build the
+image as `backfort:kubernetes-test`, then run
+`python tests/kubernetes_integration.py` with Helm, kind and kubectl available.
+The integration helper uses its own kubeconfig/context and randomly named
+disposable cluster; never substitute the user's current cluster. It checks
+real backup/full verify/metadata recovery, readonly source, shared lock and
+failure paths, prune and the narrower non-root profile. `HELM`, `KIND`,
+`KUBECTL`, `BACKFORT_KUBERNETES_IMAGE` and `KIND_NODE_IMAGE` allow isolated
+tool/image overrides. Test the actual CSI/admission policy before claiming
+production compatibility; kind is not certification of all storage drivers.
 For release stabilization, also verify direct execution from a clean Linux
 checkout: `backfort.sh` and executable test adapters must retain mode `0755`.
 CI provides Mike Farah `yq` v4, GnuPG, ShellCheck and Python on Ubuntu;

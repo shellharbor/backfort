@@ -1,0 +1,30 @@
+{{- range $operation := list "backup" "prune" }}
+{{- $schedule := index $.Values $operation }}
+{{- if $schedule.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "backfort.name" $ }}-{{ $operation }}
+  labels:
+    {{- include "backfort.labels" $ | nindent 4 }}
+spec:
+  schedule: {{ $schedule.schedule | quote }}
+  timeZone: {{ $schedule.timeZone | quote }}
+  suspend: {{ $schedule.suspend }}
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ $.Values.job.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: {{ $.Values.job.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ $.Values.job.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      parallelism: 1
+      completions: 1
+      activeDeadlineSeconds: {{ $.Values.job.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: {{ $.Values.job.ttlSecondsAfterFinished }}
+      template:
+        {{- $command := ternary "run" "prune" (eq $operation "backup") }}
+        {{- include "backfort.pod" (dict "root" $ "args" (list $command) "restoreClaim" "") | nindent 8 }}
+{{- end }}
+{{- end }}

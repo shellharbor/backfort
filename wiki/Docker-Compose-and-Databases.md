@@ -45,6 +45,32 @@ Backfort writes the Compose payload below `compose/`, named volumes below
 `volumes/`, bind mounts below `bind-mounts/`, and logical database dumps below
 `databases/` in each backup version.
 
+## Running this job from the Backfort container
+
+The Backfort image contains the Docker CLI and Compose plugin, but it cannot
+discover the host daemon or project files unless the operator deliberately
+mounts them. Keep `project_dir` as the same absolute path on both sides of the
+container boundary:
+
+```yaml
+services:
+  backfort:
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /srv/crm:/srv/crm:ro
+```
+
+With that mapping, `project_dir: /srv/crm` resolves correctly in Backfort and
+the Docker daemon receives the real host path when Compose is invoked. Do not
+remap `/srv/crm` to `/project`: the host Docker daemon would then look for a
+host `/project` path and bind-mount discovery or Compose operations can fail.
+
+The socket is host-root-equivalent, even when mounted `:ro`; it is not an
+ordinary read-only dependency. Give it only to a trusted container running a
+reviewed `docker_compose` job. Files-only jobs must omit the socket. The
+sample in [Docker Deployment](Docker-Deployment) also covers the state/work
+mounts and one-shot scheduling model.
+
 ## Named-volume helper image
 
 Reading a Docker named volume runs a short-lived helper container. Pin and

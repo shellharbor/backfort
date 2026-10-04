@@ -3,9 +3,30 @@
 Backfort is a one-shot Bash backup and recovery tool for Linux. Its public
 configuration is YAML and the executable is `backfort.sh`.
 
+The stable container-distribution decisions are recorded in
+`docs/ADR-001-docker-distribution.md`.
+Kubernetes deployment decisions are in `docs/ADR-002-kubernetes-jobs.md`.
+
 ## Current scope
 
 - Full file and Docker Compose backups to local or rclone destinations.
+- `charts/backfort` provides Helm 3 Job/CronJob deployment for Kubernetes 1.31+
+  mounted PVC files, using the same image/CLI/config and recovery format. State
+  and lock persist; source PVCs are readonly, backup/prune schedules initially
+  suspended, automatic retries disabled, recovery targets isolated. Existing
+  Secrets supply credentials; no API token/RBAC, Docker socket or host paths
+  are granted. Root preserves supported metadata; a narrower non-root profile
+  is optional. This does not discover cluster resources, orchestrate CSI
+  snapshots or run database dumps in Pods. See `wiki/Kubernetes-Deployment.md`.
+- Docker is a supported additional distribution: the Debian-based
+  `ghcr.io/shellharbor/backfort` image runs the same one-shot CLI and YAML
+  contract on `linux/amd64` and `linux/arm64`. Its default `doctor` command is
+  readiness; it is intentionally not a daemon and has no synthetic health
+  check or in-container scheduler. Container deployments persist state and
+  temporary workspace explicitly, and may use a non-root account only for
+  files-only work that does not require owner-preserving recovery. A
+  `docker_compose` job must mount the host project at the identical absolute
+  path and deliberately grant the host-root-equivalent Docker socket.
 - Encryption supports multi-recipient age, hardened symmetric GPG, and
   asymmetric GPG. An asymmetric writer imports only verified recipient public
   keys and encrypts to exact 40- or 64-hex primary fingerprints; the private
@@ -145,8 +166,16 @@ GitHub Actions runs the full test set on Ubuntu with Mike Farah yq v4 and a
 Bash 4.3 syntax and runtime gate. CodeQL scans workflow definitions; OpenSSF Scorecard
 publishes supply-chain findings; a `v*` tag must match the release-ready CLI
 version and Changelog heading; a Documentation workflow checks local Markdown
-links and whitespace; Dependabot proposes grouped weekly GitHub Actions
-updates.
+links and whitespace; Dependabot proposes grouped weekly GitHub Actions and
+Docker base-image updates. CI builds and runs the Docker image against a real local file-backup,
+full verification, restore, and invalid-config path. A matching release also
+tests amd64 and arm64 images before publishing immutable exact GHCR tags with
+OCI metadata, provenance and SBOM; Docker Hub mirroring is opt-in through its
+two release secrets.
+The Kubernetes workflow runs Helm lint/rendering safety tests plus real-image
+PVC backup, full verify, metadata restore, nonempty-target/lock/config failures,
+prune and non-root checks in a private disposable kind cluster. It does not
+certify every CSI driver or admission policy.
 
 ## CLI
 

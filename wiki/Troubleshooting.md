@@ -29,6 +29,17 @@ from the failed run, but remove any unrelated system secrets before sharing it.
 | `kind=hook ... message=timed-out` | The hook exceeded its `timeout_seconds`. Run its cleanup action manually if needed, make the post hook idempotent, then fix or resize the bound. |
 | `unsupported-entries-skipped` during pack | Backfort preserved the usable portion of the source but omitted FIFO/device entries or names unsafe for a portable manifest. Replace or explicitly exclude those entries if they are required data. |
 | Restore refuses a target | Restore into a new or empty explicit directory; inspect a staging restore before replacing live data. |
+| Container `doctor` cannot see a source, destination, or state directory | The YAML path is a container path. Add the matching explicit bind or named-volume mount; sources are normally `:ro`, while state, temporary work, and destinations must be writable. |
+| A Compose job fails inside the Backfort image | Mount both `/var/run/docker.sock` and the Compose project at its identical absolute host path. Confirm the socket group/user can access it; treat socket access as host-root-equivalent. |
+| A container's `HEALTHCHECK` is missing or it exits after `doctor` | This is expected. Backfort is a one-shot CLI. Run `docker compose run --rm backfort doctor` for readiness and schedule `run` on the host rather than enabling automatic restarts. |
+| Kubernetes CronJob never starts | Schedules initially have `suspend: true`. Complete doctor, backup and recovery drills, then enable reviewed schedules. Check timezone and scheduling events. |
+| PVC backup Pod stays Pending or reports Multi-Attach | Check namespace, claim, storage class, access mode and node affinity. RWO needs compatible same-node attachment; RWOP cannot share an active application mount. |
+| Kubernetes Job failed or a client `wait` timed out | Inspect Job conditions, Pod exit codes, logs and events. No automatic retry is configured; a timed-out client wait does not cancel the Job. Create a newly named manual Job only after fixing the cause. |
+| Non-root Pod cannot create state/work or restore metadata | Its UID must create owned child directories on the chosen storage. Review CSI fsGroup support and root-squash; restoring another owner's data requires the root-capable fidelity profile. |
+
+The [Kubernetes Deployment](Kubernetes-Deployment) runbook describes storage
+constraints, existing Secrets, the shared lock and isolated recovery. Do not
+delete a lock file or a PVC to bypass a failed deployment check.
 
 ## Diagnose a destination and a version
 

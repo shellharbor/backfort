@@ -1,0 +1,13 @@
+# Optional files-only profile. Sources must be readable by UID/GID 1000.
+# The storage driver must apply fsGroup and allow this UID to create owned
+# child directories; test doctor/backup/restore on the actual CSI filesystem.
+# This profile does not promise owner/ACL/xattr recovery for other UIDs.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+securityContext:
+  capabilities:
+    add: []
+    drop: [ALL]

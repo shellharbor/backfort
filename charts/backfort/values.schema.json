@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["image", "config", "sources", "storage", "backup", "prune", "job", "manual"],
+  "properties": {
+    "image": {"type": "object", "properties": {
+      "repository": {"type": "string", "minLength": 1},
+      "tag": {"type": "string"},
+      "digest": {"type": "string", "pattern": "^$|^sha256:[a-f0-9]{64}$"},
+      "pullPolicy": {"enum": ["Always", "IfNotPresent", "Never"]}
+    }, "additionalProperties": false},
+    "imagePullSecrets": {"type": "array", "items": {"type": "object", "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}, "additionalProperties": false}},
+    "config": {"type": "object", "required": ["version", "settings", "jobs", "destinations"], "properties": {
+      "version": {"const": 1},
+      "settings": {"type": "object", "required": ["host_id", "state_directory", "temp_directory", "lock_file"]},
+      "jobs": {"type": "array", "minItems": 1},
+      "destinations": {"type": "array", "minItems": 1}
+    }},
+    "sources": {"type": "array", "items": {"$ref": "#/definitions/source"}},
+    "storage": {"type": "object", "required": ["state", "backups"], "properties": {
+      "state": {"$ref": "#/definitions/storage"},
+      "backups": {"allOf": [{"$ref": "#/definitions/storage"}, {"required": ["enabled"]}]}
+    }, "additionalProperties": false},
+    "envFromSecret": {"type": "string"},
+    "env": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+    "secretMounts": {"type": "array", "items": {"type": "object", "required": ["name", "secretName", "mountPath"], "properties": {
+      "name": {"$ref": "#/definitions/mountName"},
+      "secretName": {"type": "string", "minLength": 1},
+      "mountPath": {"type": "string", "pattern": "^/run/secrets/[a-zA-Z0-9_-]+$"}
+    }, "additionalProperties": false}},
+    "serviceAccount": {"type": "object", "required": ["create", "name"], "properties": {"create": {"type": "boolean"}, "name": {"type": "string"}}, "additionalProperties": false},
+    "backup": {"$ref": "#/definitions/schedule"},
+    "prune": {"$ref": "#/definitions/schedule"},
+    "job": {"type": "object", "required": ["activeDeadlineSeconds", "ttlSecondsAfterFinished", "startingDeadlineSeconds", "successfulJobsHistoryLimit", "failedJobsHistoryLimit"], "properties": {
+      "activeDeadlineSeconds": {"type": "integer", "minimum": 1},
+      "ttlSecondsAfterFinished": {"type": "integer", "minimum": 1},
+      "startingDeadlineSeconds": {"type": "integer", "minimum": 10},
+      "successfulJobsHistoryLimit": {"type": "integer", "minimum": 0},
+      "failedJobsHistoryLimit": {"type": "integer", "minimum": 0}
+    }, "additionalProperties": false},
+    "manual": {"type": "object", "required": ["enabled", "name", "args", "restoreClaim"], "properties": {
+      "enabled": {"type": "boolean"},
+      "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,18}[a-z0-9])?$"},
+      "args": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+      "restoreClaim": {"type": "string"}
+    }, "additionalProperties": false},
+    "workSizeLimit": {"type": "string", "minLength": 1},
+    "scratchSizeLimit": {"type": "string", "minLength": 1},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1},
+    "resources": {"type": "object"},
+    "podSecurityContext": {"type": "object"},
+    "securityContext": {"type": "object"},
+    "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+    "affinity": {"type": "object"},
+    "tolerations": {"type": "array", "items": {"type": "object"}}
+  },
+  "definitions": {
+    "mountName": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,38}[a-z0-9])?$"},
+    "source": {"type": "object", "required": ["name", "claimName", "mountPath"], "properties": {
+      "name": {"$ref": "#/definitions/mountName"},
+      "claimName": {"type": "string", "minLength": 1},
+      "mountPath": {"type": "string", "pattern": "^/source(/[a-zA-Z0-9_-]+)*$"}
+    }, "additionalProperties": false},
+    "storage": {"type": "object", "required": ["existingClaim", "size", "accessModes"], "properties": {
+      "enabled": {"type": "boolean"},
+      "existingClaim": {"type": "string"},
+      "size": {"type": "string", "minLength": 1},
+      "accessModes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["ReadWriteOnce", "ReadWriteOncePod", "ReadWriteMany"]}},
+      "storageClass": {"type": ["null", "string"]}
+    }, "additionalProperties": false},
+    "schedule": {"type": "object", "required": ["enabled", "schedule", "timeZone", "suspend"], "properties": {
+      "enabled": {"type": "boolean"},
+      "schedule": {"type": "string", "minLength": 1},
+      "timeZone": {"type": "string", "minLength": 1},
+      "suspend": {"type": "boolean"}
+    }, "additionalProperties": false}
+  }
+}

@@ -1,0 +1,116 @@
+# Install in the SAME namespace as every source PVC. Edit host_id, source
+# claims and storage sizes before installing. Schedules start suspended.
+image:
+  repository: ghcr.io/shellharbor/backfort
+  tag: "" # Defaults to Chart.appVersion; use digest to pin an image instead.
+  digest: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+config:
+  version: 1
+  settings:
+    host_id: kubernetes-app-01
+    state_directory: /var/lib/backfort/state
+    temp_directory: /var/tmp/backfort/work
+    lock_file: /var/lib/backfort/state/backfort.lock
+    min_free_mb: 512
+  destinations:
+    - name: local
+      type: local
+      path: /backups
+  jobs:
+    - name: application-files
+      source:
+        type: files
+        paths: [/source]
+        exclude: ["*.log", "*/cache/*"]
+        follow_symlinks: false
+      destinations: [local]
+      success: {min_copies: 1}
+      compression: {method: gzip, level: 6}
+      encryption: {method: none}
+      signing: {method: none}
+      retention: {keep_last: 3, keep_daily: 7, keep_weekly: 4, keep_monthly: 6, min_keep: 1}
+
+sources:
+  - name: application
+    claimName: application-data # Existing PVC, never created by this chart.
+    mountPath: /source
+
+storage:
+  state:
+    existingClaim: ""
+    size: 1Gi
+    accessModes: [ReadWriteOnce]
+    storageClass: null # null: cluster default; "": no dynamic provisioner.
+  backups:
+    enabled: true # Disable for rclone-only jobs after changing config.
+    existingClaim: ""
+    size: 20Gi
+    accessModes: [ReadWriteOnce]
+    storageClass: null
+
+# These already-existing Secrets are never generated or read by Helm.
+envFromSecret: "" # Secret keys become environment variables.
+env: {} # Non-secret environment values only, e.g. RCLONE_CONFIG.
+secretMounts: [] # [{name: rclone, secretName: backfort-rclone, mountPath: /run/secrets/rclone}]
+
+serviceAccount:
+  create: true
+  name: ""
+
+backup:
+  enabled: true
+  schedule: "15 2 * * *"
+  timeZone: Etc/UTC
+  suspend: true
+prune:
+  enabled: true
+  schedule: "45 3 * * *"
+  timeZone: Etc/UTC
+  suspend: true
+
+job:
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 3
+
+manual:
+  enabled: false
+  name: doctor # Use a new name per invocation; completed Jobs are immutable.
+  args: [doctor] # Command first, optionally preceded by --dry-run/-n; no shell interpolation.
+  restoreClaim: "" # Existing EMPTY recovery PVC, mounted only to manual Job /restore.
+
+workSizeLimit: 10Gi
+scratchSizeLimit: 64Mi
+terminationGracePeriodSeconds: 120
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+    ephemeral-storage: 1Gi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+    ephemeral-storage: 12Gi
+
+# Root is required for the full owner/ACL/xattr recovery contract. No Docker
+# socket, hostPath, privileged container, API token, or Kubernetes RBAC.
+podSecurityContext:
+  runAsUser: 0
+  runAsGroup: 0
+  seccompProfile: {type: RuntimeDefault}
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: [ALL]
+    add: [CHOWN, DAC_OVERRIDE, FOWNER, FSETID, SETFCAP]
+
+nodeSelector:
+  kubernetes.io/os: linux
+affinity: {}
+tolerations: []

@@ -27,7 +27,8 @@ jobs:
             tests/fake-age.sh \
             tests/fake-docker.sh \
             tests/fake-minisign.sh \
-            tests/fake-rclone.sh; do
+            tests/fake-rclone.sh \
+            tests/docker-image.sh; do
             test -x "$file"
           done
 
@@ -83,6 +84,9 @@ jobs:
 
       - name: Run per-file hash test
         run: bash tests/file-hashes.sh
+
+      - name: Run symbolic and hard link recovery test
+        run: bash tests/symlinks.sh
 
       - name: Run archive resilience test
         run: bash tests/archive-resilience.sh
@@ -143,3 +147,8 @@ jobs:
 
       - name: Run preflight failure observability test
         run: bash tests/preflight-failure.sh
+
+      - name: Build and smoke-test the Docker image
+        run: |
+          docker build --tag backfort:test .
+          bash tests/docker-image.sh backfort:test

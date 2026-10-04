@@ -3,6 +3,40 @@
 All notable changes are documented here. Backfort follows semantic versioning
 once a release is tagged.
 
+## Unreleased
+
+- Fixed file-source tar transforms rewriting symbolic-link targets with the
+  internal `data/` prefix. New backups preserve relative, absolute and dangling
+  link text while still prefixing archive members and hard-link references.
+  Added recovery coverage for those links and explicit dereferencing. Existing
+  bundles are not rewritten; create a fresh backup and inspect link targets
+  when rehearsing recovery of an older bundle.
+
+- Added a Helm 3 deployment for Kubernetes 1.31+: explicit readonly PVC-file
+  sources, persistent state/shared lock and optional local backup PVC, existing
+  Secret references, suspended backup/prune CronJobs and manual verification or
+  isolated restore Jobs. The chart grants no API/RBAC, Docker socket or host
+  privileges and guards against source/state/backup/recovery claim overlap.
+- Added Kubernetes values examples, an operational Wiki runbook, architecture
+  decision, rendering/safety tests and real-image kind integration with full
+  metadata recovery, lock refusal, error paths and non-root round trips. A
+  dedicated GitHub workflow repeats the checks. Native cluster discovery,
+  CSI snapshots and database-Pod dump adapters remain outside this scope.
+
+- Added a first-class production Docker distribution. The Debian-based image
+  keeps the GNU tar fidelity required for ACLs, xattrs, sparse files and
+  numeric ownership; includes Backfort's optional runtime tools, Docker
+  Compose client and rclone; and defaults to the one-shot `doctor` command.
+- Added a hardened Compose deployment example, container-aware YAML example,
+  Docker smoke test, configuration/troubleshooting guidance and a dedicated
+  Docker deployment Wiki runbook. Docker is an additional distribution method
+  and preserves the native CLI, YAML and recovery-bundle contract.
+- Extended tag releases with multi-architecture (`linux/amd64`, `linux/arm64`)
+  build-and-smoke checks and GHCR publication. Exact release tags are
+  immutable; stable releases also update minor, major and `latest` aliases,
+  include OCI metadata, provenance and SBOM attestations. Docker Hub mirroring
+  is optional and requires its two explicit release secrets.
+
 ## 1.1.0
 
 - Fixed a silent data-loss defect: a file the archive process could not read

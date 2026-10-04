@@ -1,6 +1,6 @@
 # Docker Compose backup contract
 
-Docker Compose recovery is implemented in Backfort 0.5. This document defines
+Docker Compose recovery is implemented in Backfort 1.1. This document defines
 the safety boundary of that adapter and the operator responsibilities that
 remain intentionally manual during a restore.
 
@@ -53,7 +53,7 @@ jobs:
           databases: [analytics]
 ```
 
-This is valid 0.5 configuration after replacing placeholder values. `volumes`
+This is valid 1.1 configuration after replacing placeholder values. `volumes`
 contains logical Compose volume names, not host mount paths. Backfort resolves
 them through `docker compose config` and archives them through a helper image
 that must already exist locally; it will not pull images during a backup.
@@ -69,7 +69,7 @@ that must already exist locally; it will not pull images during a backup.
   temporary helper container with network disabled, a read-only root filesystem
   and a read-only source-volume mount. They are best-effort unless a storage
   snapshot integration is added later.
-- Backfort 0.5 does not stop services. Any future stop operation must record
+- Backfort 1.1 does not stop services. Any future stop operation must record
   exactly which services it stopped and restart those services in an
   unconditional cleanup path.
 - Bind mounts and `.env` files are never copied implicitly. They require an

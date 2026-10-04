@@ -10,6 +10,7 @@ explicit, verified backup and exits—no daemon to babysit, no hidden discovery
 of files or databases, and no risky in-place restore switch.
 
 [![CI](https://github.com/shellharbor/backfort/actions/workflows/ci.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/ci.yml)
+[![Kubernetes](https://github.com/shellharbor/backfort/actions/workflows/kubernetes.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/kubernetes.yml)
 [![Documentation](https://github.com/shellharbor/backfort/actions/workflows/documentation.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/documentation.yml)
 [![CodeQL](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/shellharbor/backfort/badge)](https://scorecard.dev/viewer/?uri=github.com/shellharbor/backfort)
@@ -21,6 +22,8 @@ of files or databases, and no risky in-place restore switch.
 [![GitHub stars](https://img.shields.io/github/stars/shellharbor/backfort?style=flat)](https://github.com/shellharbor/backfort/stargazers)
 
 **[Get started](#first-backup--durable-setup)** ·
+**[Run in Docker](#run-backfort-in-docker)** ·
+**[Run in Kubernetes](#run-backfort-in-kubernetes)** ·
 **[Examples](examples/README.md)** ·
 **[Compose migration](wiki/Compose-Migration.md)** ·
 **[Recovery guide](wiki/Restore-and-Verification.md)** ·
@@ -34,6 +37,8 @@ Canonical repository: [github.com/shellharbor/backfort](https://github.com/shell
 | --- | --- | --- |
 | Protect files and directories on a schedule | [First backup](#first-backup--durable-setup) | A strict YAML job for cron or a systemd timer. |
 | Take a fast snapshot before a risky change | [Quick file backup](#quick-file-backup) | A one-command backup plus a reusable non-secret recovery config. |
+| Run Backfort as a containerized job | [Run in Docker](#run-backfort-in-docker) | The same YAML plan and recovery format, with explicit persistent mounts. |
+| Protect files on Kubernetes PVCs | [Run in Kubernetes](#run-backfort-in-kubernetes) | Helm Job/CronJob deployment with explicit read-only sources, durable state and isolated recovery. |
 | Back up a Docker Compose stack | [Docker Compose sources](#docker-compose-sources) | Explicit project files, bind mounts, named volumes, and database dumps. |
 | Move a Compose project to a new server | [Compose migration](wiki/Compose-Migration.md) | A staged runbook with rollback-minded cutover steps. |
 | Restore a database to an isolated Compose project | [Compose restore assistant](#restore-safety) | Verified staging and an explicit PostgreSQL/MySQL/MariaDB import boundary. |
@@ -58,7 +63,7 @@ explicit source → local bundle → checksum/signature → independent copies �
 
 Backfort reads YAML, creates full backups, optionally compresses and encrypts
 them, publishes each completed version atomically to one or more local or
-rclone destinations, and exits. Scheduling belongs to cron or a systemd timer;
+rclone destinations, and exits. Scheduling belongs to cron, a systemd timer or a Kubernetes CronJob;
 Backfort does not run a daemon.
 
 Backfort 1.0.0 is the first stable release. It can archive explicit Compose
@@ -71,6 +76,8 @@ destinations as a file backup.
 - One Bash 4.3+ executable and one YAML configuration
 - Strict configuration validation with unknown-key detection
 - Full-file and directory backups with GNU tar include roots and excludes
+- Helm deployment for Kubernetes PVC-file backups, manual recovery Jobs and
+  suspended-by-default backup/prune CronJobs
 - Docker Compose project snapshots: manifests, selected named volumes and bind
   mounts
 - Logical PostgreSQL, MySQL and MariaDB dumps; native MS SQL and Oracle export
@@ -117,6 +124,102 @@ sudo apt-get install bash coreutils findutils gzip tar util-linux
 
 Install Mike Farah `yq` v4 using its official release or package. The Python
 package with the same name is not compatible.
+
+## Run Backfort in Docker
+
+The container image is an additional distribution method, not a second backup
+engine. It runs the same `backfort.sh`, accepts the same strict YAML, and
+creates the same portable bundles as a native installation. Images are
+published for `linux/amd64` and `linux/arm64` to GitHub Container Registry:
+
+```bash
+docker pull ghcr.io/shellharbor/backfort:1.1.0
+docker run --rm ghcr.io/shellharbor/backfort:1.1.0 --version
+```
+
+For a durable setup, copy the sample Compose file and its matching config into
+a root-owned deployment directory. The example is deliberately a one-shot
+job: it defaults to `doctor` and does not restart itself.
+
+```bash
+sudo install -d -m 0700 /srv/backfort-container
+sudo cp docker-compose.example.yml /srv/backfort-container/docker-compose.yml
+sudo cp examples/docker-files-local.yaml /srv/backfort-container/config.yaml
+sudoedit /srv/backfort-container/config.yaml
+
+export BACKFORT_SOURCE_DIR=/srv/application
+export BACKFORT_BACKUP_DIR=/srv/backups/backfort
+cd /srv/backfort-container
+docker compose run --rm backfort doctor
+docker compose run --rm backfort --dry-run run
+docker compose run --rm backfort run
+```
+
+The image starts as root on purpose: a full staged restore may need to recreate
+numeric ownership, ACLs, extended attributes, or sparse files. A files-only
+job can set a non-root `user:` in the sample when the source, backup and
+restore mounts are already writable by that account; doing so intentionally
+trades away owner-preserving recovery. The example has a read-only container
+root filesystem, but its named state and work volumes and the destination bind
+mount remain writable. `temp_directory` needs room for a complete working
+bundle, not merely a small scratch file.
+
+The `doctor` exit status is the container's honest readiness result. Backfort
+is not a daemon, so it intentionally has no `HEALTHCHECK`, no port, and no
+`restart: always`. Schedule `docker compose run --rm backfort run` from the
+host with cron or a systemd timer; schedule `prune` separately.
+
+For `docker_compose` jobs, mount the Docker socket and the target project
+directory at its **same absolute host path** inside Backfort (for example,
+`/srv/crm:/srv/crm:ro`). A Docker socket is host-root-equivalent even when
+mounted read-only. Use it only for a trusted Compose job and never for a
+normal files-only backup. The complete deployment, secret, recovery and
+upgrade guidance is in [Docker deployment](wiki/Docker-Deployment.md).
+
+Release tags are immutable exact versions such as `1.1.0`. Stable releases
+also move `1.1`, `1`, and `latest`; pin an exact version or digest for a
+repeatable run and retain the `backfort-state` volume during upgrades. Docker
+Hub publication is optional and occurs only when the repository has both
+`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` release secrets; GHCR is the
+canonical image registry.
+
+## Run Backfort in Kubernetes
+
+Already keeping your application files on PVCs? The [Helm chart](charts/backfort/README.md)
+runs the same Backfort image as finite Jobs and CronJobs. It needs Helm 3,
+Kubernetes 1.31+, and source PVCs in the release's namespace. Adapt the host ID,
+claim names and storage capacity first:
+
+```bash
+cp examples/kubernetes/pvc-local.values.yaml values.yaml
+helm lint charts/backfort --strict -f values.yaml
+helm upgrade --install backfort ./charts/backfort -n application -f values.yaml
+```
+
+Both schedules start suspended. Run a manual `doctor`, dry-run, first backup,
+full verification and recovery drill before enabling them. For example, a
+deliberate backup can be launched from the suspended CronJob:
+
+```bash
+kubectl -n application create job backfort-backup-01 --from=cronjob/backfort-backup
+kubectl -n application wait --for=condition=complete job/backfort-backup-01 --timeout=60m
+kubectl -n application logs job/backfort-backup-01
+```
+
+Source PVCs are read-only; state and the shared lock persist on a separate PVC.
+Copies go to another PVC or your existing rclone/S3/cloud destination. Manual
+restore mounts only an explicitly isolated recovery PVC and still refuses a
+nonempty target. The chart grants no Kubernetes API token, RBAC, Docker socket
+or privileged host access. Full owner/ACL/xattr recovery uses the documented
+root profile; a narrower non-root example is provided.
+
+This is **PVC-file backup support, not whole-cluster backup**: no resource
+discovery, CSI snapshot orchestration or native SQL dumps from database Pods.
+A live database PVC is not a consistent backup. RWO/RWOP access modes and the
+actual storage driver's permissions/locking need review before deployment.
+The [Kubernetes runbook](wiki/Kubernetes-Deployment.md) covers those limits,
+Secrets, scheduling, manual verification and safe restore, with
+[ready-to-adapt values examples](examples/kubernetes/README.md).
 
 ## First backup — durable setup
 
@@ -1327,6 +1430,7 @@ bash tests/workspace-failure.sh
 bash tests/smoke.sh
 bash tests/host-scope.sh
 bash tests/file-hashes.sh
+bash tests/symlinks.sh
 bash tests/quick.sh
 bash tests/rclone-smoke.sh
 bash tests/compose-smoke.sh
@@ -1357,21 +1461,24 @@ Backfort's badges point to checks that are actually tracked in the repository:
 | Guardrail | What it protects |
 | --- | --- |
 | [CI](.github/workflows/ci.yml) | Bash syntax and runtime on Bash 4.3, ShellCheck, YAML examples, the hermetic suite, and a real PostgreSQL/MySQL Compose backup-and-recovery round trip. |
+| [Kubernetes](.github/workflows/kubernetes.yml) | Helm rendering/safety gates and real-image PVC backup, full verification, metadata recovery, cross-Job locking and non-root operation in an isolated kind cluster. |
 | [Documentation](.github/workflows/documentation.yml) | Internal Markdown links across the README, Wiki sources, examples, and community documents, plus whitespace in changed files. |
 | [CodeQL](.github/workflows/codeql.yml) | GitHub Actions workflow analysis on pull requests, `main`, and a weekly schedule. |
 | [OpenSSF Scorecard](.github/workflows/scorecard.yml) | A weekly supply-chain review published to GitHub code scanning. |
 | [Release metadata](.github/workflows/release-metadata.yml) | A `vX.Y.Z` tag must match the CLI version and the Changelog before release work proceeds. |
-| [Dependabot](.github/dependabot.yml) | Weekly grouped GitHub Actions dependency updates. |
+| [Dependabot](.github/dependabot.yml) | Weekly grouped GitHub Actions updates and Docker base-image updates. |
 
 Every push and pull request runs CI on Ubuntu. Documentation-only changes also
-run the lightweight link check. CI, Documentation, CodeQL, and Scorecard can be
+run the lightweight link check. CI, Kubernetes, Documentation, CodeQL, and Scorecard can be
 started manually from the Actions tab when diagnosing an environment-specific
 failure; Release metadata intentionally starts only when a `vX.Y.Z` tag is
 pushed.
 
-## Version 1.0 limitations
+## Current limitations
 
 - Full backups only; no incremental mode or deduplication
+- Kubernetes support covers mounted PVC files, not API resource discovery,
+  CSI snapshots, database-Pod dump adapters or automatic cluster recovery
 - No native S3, SSH or WebDAV destination; use rclone for supported remotes
 - No built-in status page; use Prometheus textfile metrics or `watchdog`
 - GNU userland is required

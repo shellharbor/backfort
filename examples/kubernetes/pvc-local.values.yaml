@@ -1,0 +1,17 @@
+# Helm values, NOT a Backfort config file. Install in application's namespace.
+config:
+  settings:
+    host_id: cluster-a-application
+sources:
+  - name: application
+    claimName: application-data
+    mountPath: /source
+storage:
+  state:
+    size: 1Gi
+  backups:
+    size: 100Gi
+backup:
+  suspend: true
+prune:
+  suspend: true

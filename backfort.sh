@@ -3377,7 +3377,10 @@ pack_files_job() {
   # omitting it from the archive while the backup is still reported as a
   # success. handle_tar_pack_status below tells those two cases apart by
   # tar's own exit status instead.
-  tar_arguments=(--create --xattrs --acls --sparse --file "$tar_file" --directory / --transform 's,^,data/,')
+  # Prefix member names and hard-link references, but not symbolic-link
+  # targets. GNU tar's default transform scope also rewrites symlink text,
+  # breaking relative and absolute links after staged recovery.
+  tar_arguments=(--create --xattrs --acls --sparse --file "$tar_file" --directory / --transform 'flags=rh;s,^,data/,')
   follow_symlinks=$(cfg ".jobs[$job_index].source.follow_symlinks // false")
   [[ $follow_symlinks == true ]] && tar_arguments+=(--dereference)
 

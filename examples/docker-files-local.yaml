@@ -1,0 +1,35 @@
+version: 1
+
+# Paths in this example are container paths. Keep state and temporary work on
+# persistent writable mounts, and put the lock in state so independent
+# docker compose run invocations share it.
+settings:
+  host_id: docker-host-01
+  state_directory: /var/lib/backfort
+  temp_directory: /var/tmp/backfort
+  lock_file: /var/lib/backfort/backfort.lock
+  min_free_mb: 512
+
+destinations:
+  - name: local
+    type: local
+    path: /backups
+
+jobs:
+  - name: container-files
+    source:
+      type: files
+      paths: [/source]
+      exclude: ["*.log", "*/cache/*"]
+      follow_symlinks: false
+    destinations: [local]
+    success: {min_copies: 1}
+    compression: {method: gzip, level: 6}
+    encryption: {method: none}
+    signing: {method: none}
+    retention:
+      keep_last: 3
+      keep_daily: 0
+      keep_weekly: 0
+      keep_monthly: 0
+      min_keep: 1

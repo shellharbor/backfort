@@ -5,6 +5,8 @@
 - [Configuration](Configuration)
 - [Destinations and S3](Destinations-and-S3)
 - [Quick Backups](Quick-Backups)
+- [Docker Deployment](Docker-Deployment)
+- [Kubernetes Deployment](Kubernetes-Deployment)
 - [Docker Compose and Databases](Docker-Compose-and-Databases)
 - [Compose Migration](Compose-Migration)
 - [Restore and Verification](Restore-and-Verification)

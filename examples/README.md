@@ -1,6 +1,6 @@
 # Backfort examples
 
-Each top-level YAML file is valid Backfort 0.5 configuration after you replace
+Each top-level YAML file is valid Backfort 1.1 configuration after you replace
 the example paths, host ID and rclone remote name. Run `doctor` before using a
 configuration for the first time:
 
@@ -8,6 +8,9 @@ configuration for the first time:
 backfort.sh -c /etc/backfort/config.yaml doctor
 backfort.sh -c /etc/backfort/config.yaml --dry-run run
 ```
+
+For Kubernetes, use the separate [Helm values examples](kubernetes/README.md).
+These are deployment overrides, not native Backfort configuration files.
 
 | File | Use case |
 | --- | --- |
@@ -17,6 +20,7 @@ backfort.sh -c /etc/backfort/config.yaml --dry-run run
 | [files-gpg-asymmetric.yaml](files-gpg-asymmetric.yaml) | GPG public-key backup with independent recovery recipients |
 | [files-with-hooks.yaml](files-with-hooks.yaml) | Application maintenance-mode hook before and after an offsite backup |
 | [files-prometheus.yaml](files-prometheus.yaml) | Local backup with node_exporter Prometheus textfile metrics |
+| [docker-files-local.yaml](docker-files-local.yaml) | A container-friendly local file backup plan for the Docker example |
 | [docker-compose-postgres.yaml](docker-compose-postgres.yaml) | Compose project with PostgreSQL, a selected named volume, bind mount and rclone copy |
 | [compose-migration.yaml](compose-migration.yaml) | Repeatable staged migration of a Compose project to a new server |
 
