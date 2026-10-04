@@ -3,7 +3,7 @@
 # ownership. Debian provides the required GNU userland; Alpine/BusyBox does not.
 FROM docker:29-cli AS docker-cli
 FROM mikefarah/yq:4.45.1 AS yq
-FROM rclone/rclone:1.68.2 AS rclone
+FROM rclone/rclone:1.75.1 AS rclone
 
 FROM debian:bookworm-slim
 
