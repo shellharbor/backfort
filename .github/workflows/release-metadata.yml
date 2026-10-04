@@ -49,11 +49,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Set up QEMU for non-native images
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Build release image locally
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -78,11 +78,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -97,7 +97,7 @@ jobs:
           fi
       - name: Generate OCI metadata
         id: metadata
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/shellharbor/backfort
           flavor: latest=false
@@ -112,7 +112,7 @@ jobs:
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.source=https://github.com/shellharbor/backfort
       - name: Build and publish multi-platform image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -155,11 +155,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
       - name: Log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -173,7 +173,7 @@ jobs:
           fi
       - name: Generate OCI metadata
         id: metadata
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: docker.io/shellharbor/backfort
           flavor: latest=false
@@ -188,7 +188,7 @@ jobs:
             org.opencontainers.image.licenses=MIT
             org.opencontainers.image.source=https://github.com/shellharbor/backfort
       - name: Build and publish multi-platform image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: linux/amd64,linux/arm64
