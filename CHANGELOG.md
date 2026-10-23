@@ -35,6 +35,12 @@ once a release is tagged.
 - Included upstream maintenance updates since 1.2.0: rclone 1.75.2 and refreshed
   GitHub Actions supply-chain scanning dependencies.
 
+### Fixed
+
+- Removed a timing dependency from the unreadable-source recovery regression:
+  it restores the exact leading-space fixture backup rather than an ambiguous
+  `latest` when two versions share the same second-resolution creation time.
+
 ## 1.2.0
 
 - Fixed file-source tar transforms rewriting symbolic-link targets with the

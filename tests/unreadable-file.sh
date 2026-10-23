@@ -128,7 +128,11 @@ if grep -Fq 'unsupported-archive-member-removed' "$TEST_DIRECTORY/spaces.err"; t
   printf 'a leading-space name must not be treated as unsupported\n' >&2
   exit 1
 fi
-run_backfort restore latest --job files --to "$RESTORE_DIRECTORY" >/dev/null
+# B and C may complete in the same UTC second. Restore this fixture's exact
+# ID rather than asking latest to break a timestamp tie with the earlier copy.
+SPACES_BACKUP_ID=$(sed -n 's/.* event=backup-succeeded job=files backup_id=\([^ ]*\) .*/\1/p' "$TEST_DIRECTORY/spaces.err")
+[[ -n $SPACES_BACKUP_ID && -f "$BACKUP_DIRECTORY/$SPACES_BACKUP_ID.complete" ]]
+run_backfort restore "$SPACES_BACKUP_ID" --job files --to "$RESTORE_DIRECTORY" >/dev/null
 [[ $(<"$RESTORE_DIRECTORY$SOURCE_DIRECTORY/ leading-space.txt") == 'top-level leading space' ]]
 [[ $(<"$RESTORE_DIRECTORY$SOURCE_DIRECTORY/ leading-dir/ nested.txt") == 'nested leading space' ]]
 rm -rf -- "$RESTORE_DIRECTORY" "$SOURCE_DIRECTORY/ leading-space.txt" "$SOURCE_DIRECTORY/ leading-dir"
