@@ -3,6 +3,16 @@
 All notable changes are documented here. Backfort follows semantic versioning
 once a release is tagged.
 
+## Unreleased
+
+### Documentation
+
+- Added a dynamic PyPI version badge to the README, linking directly to the
+  published Backfort package so users can find its current release.
+- Expanded the README's pipx quick start with PATH setup and direct `backfort`
+  help, configuration, doctor, dry-run and backup commands; clarified virtual
+  environment command paths so no Python or shell-script prefix is needed.
+
 ## 1.3.0
 
 ### Added

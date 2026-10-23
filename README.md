@@ -16,6 +16,7 @@ of files or databases, and no risky in-place restore switch.
 [![CodeQL](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/shellharbor/backfort/badge)](https://scorecard.dev/viewer/?uri=github.com/shellharbor/backfort)
 [![GitHub release](https://img.shields.io/github/v/release/shellharbor/backfort)](https://github.com/shellharbor/backfort/releases)
+[![PyPI](https://img.shields.io/pypi/v/backfort?logo=pypi)](https://pypi.org/project/backfort/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Bash 4.3+](https://img.shields.io/badge/bash-4.3%2B-4EAA25?logo=gnubash&logoColor=white)](https://www.gnu.org/software/bash/)
 [![ShellCheck](https://img.shields.io/badge/lint-ShellCheck-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
@@ -142,8 +143,29 @@ backup format. Install the published release into an isolated environment:
 
 ```bash
 pipx install 'backfort==1.3.0'
+pipx ensurepath
+```
+
+If pipx updated your `PATH`, open a new terminal before continuing. The package
+installs the **`backfort` command**: you do not need a `python` prefix or a path
+to `backfort.sh`.
+
+```bash
 backfort --version
+backfort --help
 backfort --print-example-config > backfort.example.yaml
+```
+
+Choose a new output filename: shell redirection overwrites existing files.
+Edit the generated configuration's host ID, absolute source/destination paths,
+encryption and retention before using it. Then check the setup, review a dry
+run, and create the backup with the installed command:
+
+```bash
+backfort -c "$PWD/backfort.example.yaml" doctor
+backfort -c "$PWD/backfort.example.yaml" --dry-run run
+# Create the backup only after reviewing the configuration and dry run.
+backfort -c "$PWD/backfort.example.yaml" run
 ```
 
 Alternatively, use pip inside a virtual environment:
@@ -155,10 +177,10 @@ python3 -m venv .venv
 .venv/bin/python -m backfort --help
 ```
 
-Choose a new output filename (shell redirection overwrites files), edit the
-config, then run `doctor` and a dry run before backing up. If `1.3.0` has not
-reached your package index yet, run `.venv/bin/python -m pip install .` from
-a trusted `v1.3.0` checkout instead. For privileged backups use a protected
+With a virtual environment, use `.venv/bin/backfort` instead of bare `backfort`
+in the commands above, or activate it first with `source .venv/bin/activate`.
+To install a trusted checkout instead, run `.venv/bin/python -m pip install .`
+from its root directory. For privileged backups use a protected
 installation; never run a user-writable virtual environment as root.
 
 Direct execution from a checkout needs no Python package installation:
