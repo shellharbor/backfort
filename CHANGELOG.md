@@ -3,6 +3,38 @@
 All notable changes are documented here. Backfort follows semantic versioning
 once a release is tagged.
 
+## 1.3.0
+
+### Added
+
+- Optional Python 3.11+ Linux distribution with `backfort`, `python -m backfort`
+  and checkout-local `run_backfort.py` entry points. The package bundles the
+  canonical Bash engine and example YAML; it has no Python runtime dependencies
+  and does not replace or download system tools.
+- Standalone `--print-example-config` for emitting the bundled reference YAML,
+  including on Windows/macOS. Backup execution remains Linux-only.
+- Hatchling wheel/sdist builds with one Bash-derived version, explicit source
+  archive contents, canonical-resource integrity checks, isolated installation
+  and sdist rebuild tests, plus a real installed-package Linux backup, full
+  verification and staged recovery round trip.
+- Python CI for 3.11–3.14 on Linux and the native-Windows compatibility boundary,
+  with complete launcher branch coverage, Ruff and strict Twine validation.
+- Separate manual TestPyPI/PyPI publishing using GitHub OIDC trusted publishers,
+  matching release-tag/version/Changelog checks and index-specific environments.
+  Ordinary CI never publishes packages; no permanent PyPI API token is required.
+- Python installation, dependency and privilege guidance in the README,
+  dedicated PyPI project description, Wiki runbook and distribution ADR.
+
+### Changed
+
+- Synchronized the CLI, Python package metadata, Helm application version,
+  Docker Compose image reference and current documentation examples to 1.3.0.
+  The native CLI, YAML schema and backup/recovery format are unchanged.
+- Extended Dependabot to Python build/development dependencies and excluded
+  local Python build environments and caches from Docker build contexts.
+- Included upstream maintenance updates since 1.2.0: rclone 1.75.2 and refreshed
+  GitHub Actions supply-chain scanning dependencies.
+
 ## 1.2.0
 
 - Fixed file-source tar transforms rewriting symbolic-link targets with the

@@ -2,6 +2,7 @@
 
 - [Home](Home)
 - [Quick Start](Quick-Start)
+- [Python and PyPI](Python-and-PyPI)
 - [Configuration](Configuration)
 - [Destinations and S3](Destinations-and-S3)
 - [Quick Backups](Quick-Backups)

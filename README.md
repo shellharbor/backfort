@@ -10,6 +10,7 @@ explicit, verified backup and exits—no daemon to babysit, no hidden discovery
 of files or databases, and no risky in-place restore switch.
 
 [![CI](https://github.com/shellharbor/backfort/actions/workflows/ci.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/ci.yml)
+[![Python package](https://github.com/shellharbor/backfort/actions/workflows/python-package.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/python-package.yml)
 [![Kubernetes](https://github.com/shellharbor/backfort/actions/workflows/kubernetes.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/kubernetes.yml)
 [![Documentation](https://github.com/shellharbor/backfort/actions/workflows/documentation.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/documentation.yml)
 [![CodeQL](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml/badge.svg)](https://github.com/shellharbor/backfort/actions/workflows/codeql.yml)
@@ -22,6 +23,7 @@ of files or databases, and no risky in-place restore switch.
 [![GitHub stars](https://img.shields.io/github/stars/shellharbor/backfort?style=flat)](https://github.com/shellharbor/backfort/stargazers)
 
 **[Get started](#first-backup--durable-setup)** ·
+**[Install with Python](#run-backfort-through-python-or-install-a-pypi-package)** ·
 **[Run in Docker](#run-backfort-in-docker)** ·
 **[Run in Kubernetes](#run-backfort-in-kubernetes)** ·
 **[Examples](examples/README.md)** ·
@@ -37,6 +39,7 @@ Canonical repository: [github.com/shellharbor/backfort](https://github.com/shell
 | --- | --- | --- |
 | Protect files and directories on a schedule | [First backup](#first-backup--durable-setup) | A strict YAML job for cron or a systemd timer. |
 | Take a fast snapshot before a risky change | [Quick file backup](#quick-file-backup) | A one-command backup plus a reusable non-secret recovery config. |
+| Install the CLI with pip or pipx | [Python installation](#run-backfort-through-python-or-install-a-pypi-package) | The canonical Bash engine, bundled with a dependency-free Python launcher. |
 | Run Backfort as a containerized job | [Run in Docker](#run-backfort-in-docker) | The same YAML plan and recovery format, with explicit persistent mounts. |
 | Protect files on Kubernetes PVCs | [Run in Kubernetes](#run-backfort-in-kubernetes) | Helm Job/CronJob deployment with explicit read-only sources, durable state and isolated recovery. |
 | Back up a Docker Compose stack | [Docker Compose sources](#docker-compose-sources) | Explicit project files, bind mounts, named volumes, and database dumps. |
@@ -74,6 +77,8 @@ destinations as a file backup.
 ## Features
 
 - One Bash 4.3+ executable and one YAML configuration
+- Optional Python 3.11+ launcher with pip/pipx packaging, `backfort` and
+  `python -m backfort` entry points; no Python runtime dependencies
 - Strict configuration validation with unknown-key detection
 - Full-file and directory backups with GNU tar include roots and excludes
 - Helm deployment for Kubernetes PVC-file backups, manual recovery Jobs and
@@ -125,6 +130,51 @@ sudo apt-get install bash coreutils findutils gzip tar util-linux
 Install Mike Farah `yq` v4 using its official release or package. The Python
 package with the same name is not compatible.
 
+## Run Backfort through Python or install a PyPI package
+
+The optional Python package bundles the same Bash engine and reference YAML.
+It requires **Python 3.11+ on Linux**, plus the native Bash/GNU/yq prerequisites
+above. It is not a Python rewrite or a Windows port; use Linux Python inside
+WSL or the Docker image on Windows.
+
+Version **1.3.0** adds Python packaging without changing the native CLI or
+backup format. Install the published release into an isolated environment:
+
+```bash
+pipx install 'backfort==1.3.0'
+backfort --version
+backfort --print-example-config > backfort.example.yaml
+```
+
+Alternatively, use pip inside a virtual environment:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install 'backfort==1.3.0'
+.venv/bin/backfort --version
+.venv/bin/python -m backfort --help
+```
+
+Choose a new output filename (shell redirection overwrites files), edit the
+config, then run `doctor` and a dry run before backing up. If `1.3.0` has not
+reached your package index yet, run `.venv/bin/python -m pip install .` from
+a trusted `v1.3.0` checkout instead. For privileged backups use a protected
+installation; never run a user-writable virtual environment as root.
+
+Direct execution from a checkout needs no Python package installation:
+
+```bash
+python3 run_backfort.py --version
+python3 run_backfort.py -c /etc/backfort/config.yaml doctor
+```
+
+The launcher preserves arguments, environment, terminal, signals and engine
+exit codes. It never downloads an engine or installs system tools. Native
+Bash and Docker/Helm remain usable without Python. See
+[Python and PyPI](wiki/Python-and-PyPI.md) for examples, tests, building and the
+manual maintainer publishing procedure. Local build files are not evidence
+that a package is already published.
+
 ## Run Backfort in Docker
 
 The container image is an additional distribution method, not a second backup
@@ -133,8 +183,8 @@ creates the same portable bundles as a native installation. Images are
 published for `linux/amd64` and `linux/arm64` to GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/shellharbor/backfort:1.2.0
-docker run --rm ghcr.io/shellharbor/backfort:1.2.0 --version
+docker pull ghcr.io/shellharbor/backfort:1.3.0
+docker run --rm ghcr.io/shellharbor/backfort:1.3.0 --version
 ```
 
 For a durable setup, copy the sample Compose file and its matching config into
@@ -176,8 +226,8 @@ mounted read-only. Use it only for a trusted Compose job and never for a
 normal files-only backup. The complete deployment, secret, recovery and
 upgrade guidance is in [Docker deployment](wiki/Docker-Deployment.md).
 
-Release tags are immutable exact versions such as `1.2.0`. Stable releases
-also move `1.2`, `1`, and `latest`; pin an exact version or digest for a
+Release tags are immutable exact versions such as `1.3.0`. Stable releases
+also move `1.3`, `1`, and `latest`; pin an exact version or digest for a
 repeatable run and retain the `backfort-state` volume during upgrades. Docker
 Hub publication is optional and occurs only when the repository has both
 `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` release secrets; GHCR is the
@@ -1461,12 +1511,14 @@ Backfort's badges point to checks that are actually tracked in the repository:
 | Guardrail | What it protects |
 | --- | --- |
 | [CI](.github/workflows/ci.yml) | Bash syntax and runtime on Bash 4.3, ShellCheck, YAML examples, the hermetic suite, and a real PostgreSQL/MySQL Compose backup-and-recovery round trip. |
+| [Python package](.github/workflows/python-package.yml) | Python 3.11–3.14/Linux and the Windows boundary, complete launcher branch coverage, wheel/sdist metadata, isolated installation and real installed-package backup/recovery. |
 | [Kubernetes](.github/workflows/kubernetes.yml) | Helm rendering/safety gates and real-image PVC backup, full verification, metadata recovery, cross-Job locking and non-root operation in an isolated kind cluster. |
 | [Documentation](.github/workflows/documentation.yml) | Internal Markdown links across the README, Wiki sources, examples, and community documents, plus whitespace in changed files. |
 | [CodeQL](.github/workflows/codeql.yml) | GitHub Actions workflow analysis on pull requests, `main`, and a weekly schedule. |
 | [OpenSSF Scorecard](.github/workflows/scorecard.yml) | A weekly supply-chain review published to GitHub code scanning. |
 | [Release metadata](.github/workflows/release-metadata.yml) | A `vX.Y.Z` tag must match the CLI version and the Changelog before release work proceeds. |
-| [Dependabot](.github/dependabot.yml) | Weekly grouped GitHub Actions updates and Docker base-image updates. |
+| [Publish Python package](.github/workflows/pypi-publish.yml) | Manual, matching-tag-only TestPyPI/PyPI publishing with OIDC and separate named environments; ordinary CI never uploads a release. |
+| [Dependabot](.github/dependabot.yml) | Weekly grouped GitHub Actions, Docker base-image and Python build/development dependency updates. |
 
 Every push and pull request runs CI on Ubuntu. Documentation-only changes also
 run the lightweight link check. CI, Kubernetes, Documentation, CodeQL, and Scorecard can be

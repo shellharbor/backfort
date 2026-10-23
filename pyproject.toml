@@ -1,0 +1,91 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "backfort"
+dynamic = ["version"]
+description = "Recovery-first Linux backups for files, Docker Compose and databases"
+readme = "docs/pypi.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "Igor Sazonov"}]
+keywords = ["backup", "restore", "docker-compose", "s3", "encryption"]
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Console",
+  "Intended Audience :: System Administrators",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Unix Shell",
+  "Topic :: System :: Archiving :: Backup",
+]
+dependencies = []
+
+[project.scripts]
+backfort = "backfort.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/shellharbor/backfort"
+Documentation = "https://github.com/shellharbor/backfort/tree/main/wiki"
+Repository = "https://github.com/shellharbor/backfort"
+Issues = "https://github.com/shellharbor/backfort/issues"
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2.2,<2",
+  "hatchling>=1.27,<2",
+  "twine>=6,<7",
+  "coverage[toml]>=7.6,<8",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.version]
+path = "backfort.sh"
+pattern = '(?m)^readonly BACKFORT_VERSION="(?P<version>\d+\.\d+\.\d+)"$'
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/backfort"]
+core-metadata-version = "2.4"
+
+[tool.hatch.build.targets.wheel.force-include]
+"backfort.sh" = "backfort/_data/backfort.sh"
+"config.example.yaml" = "backfort/_data/config.example.yaml"
+
+[tool.hatch.build.targets.sdist]
+core-metadata-version = "2.4"
+include = [
+  "/src/backfort",
+  "/backfort.sh",
+  "/config.example.yaml",
+  "/run_backfort.py",
+  "/pyproject.toml",
+  "/LICENSE",
+  "/README.md",
+  "/docs/pypi.md",
+  "/tests/test_python_launcher.py",
+  "/tests/python_package.py",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+include = ["src/backfort/**/*.py", "run_backfort.py", "tests/test_python_launcher.py", "tests/python_package.py", "pyproject.toml"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.coverage.run]
+branch = true
+source = ["backfort"]
+omit = ["*/__main__.py"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true

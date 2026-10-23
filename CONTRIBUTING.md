@@ -34,6 +34,12 @@ When available, also run ShellCheck:
 shellcheck backfort.sh tests/*.sh
 ```
 
+For the optional Python/PyPI distribution, follow
+[Python package development](wiki/Python-and-PyPI.md#build-and-test).
+Keep the root Bash engine as the only source and package its exact bytes;
+do not commit generated shell copies. Artifact checks include an isolated
+install, sdist rebuild and real Linux backup/recovery round trip.
+
 Run the focused test for the changed surface. The suite includes quick backup,
 rclone, Docker Compose and its restore assistant, crypto/signing, watchdog,
 diff, pins, date-range deletion, interactive restore selection, notifications,

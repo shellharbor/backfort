@@ -12,7 +12,9 @@ that marker is never listed, restored, pruned, or selected as healthy.
 
 Examples use `backfort.sh` as the command name. From an installed production
 layout, use `sudo /opt/backfort/backfort.sh`; from a cloned checkout, use
-`./backfort.sh`.
+`./backfort.sh`. The optional [Python/PyPI distribution](Python-and-PyPI)
+provides `backfort`, `python -m backfort` and `python3 run_backfort.py` with
+the same Linux engine and external system dependencies.
 
 ## Start here
 

@@ -18,6 +18,10 @@ Python package also named `yq` is not compatible.
 
 ## 2. Install Backfort and the initial config
 
+The optional [Python/PyPI installation](Python-and-PyPI) bundles the same
+engine and example YAML. It adds Python 3.11+ but does not replace Linux,
+Bash or GNU prerequisites. The native installation below needs no Python.
+
 ```bash
 sudo install -d -m 0755 /opt/backfort /etc/backfort
 sudo install -m 0755 backfort.sh /opt/backfort/backfort.sh

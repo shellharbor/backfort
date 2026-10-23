@@ -6,6 +6,15 @@
 .codex
 .agents
 .tmp
+.venv
+venv
+ai-kit
+__pycache__
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+*.egg-info
 
 # Source and test artifacts are not part of the production image.
 docs
