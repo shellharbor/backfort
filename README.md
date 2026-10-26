@@ -215,6 +215,12 @@ docker pull ghcr.io/shellharbor/backfort:1.4.0
 docker run --rm ghcr.io/shellharbor/backfort:1.4.0 --version
 ```
 
+To pin the Docker Hub image to its verified multiarch release index:
+
+```bash
+docker pull shellharbor/backfort:1.4.0@sha256:123dcd108b6e7cb25ee30e2d199d52b4f19662e518508cf3372df5dd9c3a08b0
+```
+
 For a durable setup, copy the sample Compose file and its matching config into
 a root-owned deployment directory. The example is deliberately a one-shot
 job: it defaults to `doctor` and does not restart itself.

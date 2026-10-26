@@ -5,6 +5,12 @@ once a release is tagged.
 
 ## Unreleased
 
+### Documentation
+
+- Recorded published 1.4.0 GHCR/Docker Hub multiarch digests, successful release
+  CI and complete scans of all four published variants. Added an exact Docker
+  Hub pin example so deployments can use the verified registry index.
+
 ## 1.4.0
 
 ### Security

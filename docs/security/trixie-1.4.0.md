@@ -1,9 +1,41 @@
 # Backfort 1.4.0 container security verification
 
-Verification date: **2026-10-26**. Status: **release approved; registry
-publication pending**. The owner authorized the v1.4.0 commit, tag and
-amd64/arm64 GHCR/Docker Hub publication, including stable aliases. No Filaver
-Data files or release policy were changed.
+Verification date: **2026-10-26**. Status: **published and verified**.
+Tag `v1.4.0` points to `5ceabc15cc5f99d6fdda67a1f2d9f538e6e7d511`.
+Both registries contain amd64/arm64 images; stable aliases `1.4`, `1` and
+`latest` match their respective release indexes. No Filaver Data files or
+release policy were changed.
+
+## Published multiarch indexes
+
+| Registry | Immutable release reference |
+| --- | --- |
+| Docker Hub | `shellharbor/backfort:1.4.0@sha256:123dcd108b6e7cb25ee30e2d199d52b4f19662e518508cf3372df5dd9c3a08b0` |
+| GHCR | `ghcr.io/shellharbor/backfort:1.4.0@sha256:f931ffa31afdefd72f69c6a85c42c9db7f0b0258cb7294a2f38c0bed9f4e31fe` |
+
+These are registry **multiarch index** digests, not platform image or local
+candidate digests. The release workflow attached provenance and SBOM data.
+
+| Registry | amd64 manifest | arm64 manifest |
+| --- | --- | --- |
+| Docker Hub | `sha256:4bb84d395028a559292fdf538db83b2e825af20c7ff138d8d48eec4203ab2ff1` | `sha256:1961d6990c943858273d67f59a2686c2156d2f5d6997c2b8bcb28ed9199fb8b3` |
+| GHCR | `sha256:cae40e9d14f8f6c1659492c763a0eec14ecd2f89008ebd5e8e06e13ae4a4614a` | `sha256:f7b6b9a3341b41ec6ec02e5b4603d18ac47292a8da5ffc3088914dfa812a4f8d` |
+
+All four published variants were scanned with the same pinned Trivy 0.75
+image, database and full vuln+secret settings used below. Each has C/H/M/L/U
+**0/63/119/171/3**, OS-only **0/56/101/170/1**, zero secrets and none of the
+five target CVEs. Image version/revision labels match 1.4.0 and the release
+commit. Both Docker Hub engines match the tag's Bash bytes and pass real
+crypto and ACL/xattr/numeric-owner backup/full-verify/restore after download.
+
+The full main-commit [CI](https://github.com/shellharbor/backfort/actions/runs/40347867442),
+[real Kubernetes PVC recovery](https://github.com/shellharbor/backfort/actions/runs/40347867440),
+Python matrix, documentation, CodeQL and Scorecard passed before tag creation.
+Tag [CI](https://github.com/shellharbor/backfort/actions/runs/40348979314),
+[Kubernetes](https://github.com/shellharbor/backfort/actions/runs/40348979473),
+Python and the complete [multiarch publication workflow](https://github.com/shellharbor/backfort/actions/runs/40348979537)
+also passed. Full JSON reports and their SHA-256 manifest are available with
+the [GitHub release](https://github.com/shellharbor/backfort/releases/tag/v1.4.0).
 
 Both amd64 and arm64 production candidates remove all five requested bookworm CVEs and
 have **zero CRITICAL findings**. They retain GnuPG, SMTP and GNU recovery
@@ -43,7 +75,7 @@ not change. PyPI 1.4.0 has not been published by this task.
 | Scanner | `aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa` |
 | Database | schema v2; updated `2026-10-26T07:15:18.945937093Z`; downloaded `2026-10-26T12:54:34.247721112Z` |
 
-All four scans use this same cached database. Only the initial amd64 baseline
+All baseline, candidate and published scans use this same cached database. Only the initial amd64 baseline
 scan downloads it; subsequent scans use `--skip-db-update`. The test-only development image is
 neither the release candidate nor the vulnerability-scan target.
 
@@ -324,15 +356,12 @@ Local evidence is retained outside Git in
 - Non-root arm64 image driver `docker-image-nonroot-arm64.log`:
   `27409793a6ebee28ece3e467e4a902739ea2135a032dddde9571e6d11f916d1d`.
 
-## Publication gate and downstream boundary
+## Release and downstream boundary
 
-No image, release tag or PyPI package has been published by this task.
-The full amd64 suite, both image builds, both production-image smokes and
-both architectures' complete Trivy comparisons are complete. The owner has
-approved release with the new GnuPG HIGH finding disclosed. Publish immutable
-`1.4.0` images for amd64/arm64, verify registry index membership and scan the
-published digest. Record the **published multiarch index digest** here; the
-local candidate index above must not be substituted for it.
+The owner-authorized v1.4.0 tag and both image registries are published and
+verified as recorded above. The new GnuPG HIGH finding was disclosed before
+approval and remains in every scan without an exception. This task does not
+publish PyPI 1.4.0; Python publishing remains a separate maintainer operation.
 
 Filaver Data's tag/digest update, rebuild removal, bookworm pins and policy
 exceptions are explicitly a separate task.
