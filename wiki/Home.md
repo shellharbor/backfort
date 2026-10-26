@@ -49,6 +49,11 @@ The repository also maintains its GitHub contribution and safety documents:
 and [Support](https://github.com/shellharbor/backfort/blob/main/SUPPORT.md).
 Never place a vulnerability report or secret in a public issue.
 
+The [1.4.0 container verification report](../docs/security/trixie-1.4.0.md)
+records the trixie/mawk update, complete Trivy before/after counts and the
+remaining/new HIGH findings. It also distinguishes tested candidates from
+owner-approved publication.
+
 ## Repository automation
 
 Every push and pull request runs the Linux regression suite, ShellCheck, YAML

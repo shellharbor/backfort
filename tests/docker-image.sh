@@ -30,7 +30,8 @@ RESTORE_DIRECTORY="$TEST_DIRECTORY/restore"
 CONFIG_FILE="$TEST_DIRECTORY/config.yaml"
 INVALID_CONFIG_FILE="$TEST_DIRECTORY/invalid.yaml"
 
-mkdir -p -- "$SOURCE_DIRECTORY" "$BACKUP_DIRECTORY"
+# Keep bind mountpoints owned by the test user, including on non-root CI hosts.
+mkdir -p -- "$SOURCE_DIRECTORY" "$BACKUP_DIRECTORY" "$RESTORE_DIRECTORY"
 printf 'container round-trip\n' >"$SOURCE_DIRECTORY/probe.txt"
 chmod 0755 "$TEST_DIRECTORY" "$SOURCE_DIRECTORY" "$BACKUP_DIRECTORY"
 
@@ -78,10 +79,27 @@ run_image() {
 
 [[ "$(docker run --rm "$IMAGE" --version)" == "Backfort $EXPECTED_VERSION" ]]
 docker run --rm --read-only --entrypoint /bin/sh "$IMAGE" -ec '
+  . /etc/os-release
+  test "$VERSION_CODENAME" = trixie
+  test "$(readlink -f /usr/bin/awk)" = /usr/bin/mawk
+  test "$(dpkg-query -W -f="\${db:Status-Status}" gawk 2>/dev/null)" != installed
+  mawk -W version 2>&1 | grep -q mawk
+  tar --version | grep -q "GNU tar"
+  gpg --version >/dev/null
+  msmtp --version >/dev/null
   yq --version >/dev/null
   rclone version >/dev/null
   docker compose version >/dev/null
 '
+docker run --rm --read-only --tmpfs /tmp:rw,nosuid,nodev,size=64m \
+  -v "$PROJECT_DIRECTORY/tests/container/runtime-smoke.sh:/runtime-smoke.sh:ro" \
+  --entrypoint /bin/bash "$IMAGE" /runtime-smoke.sh
+docker run --rm --read-only -v "$SOURCE_DIRECTORY:/source" \
+  --entrypoint /bin/sh "$IMAGE" -ec '
+    chown 42424:42425 /source/probe.txt
+    setfattr -n user.backfort -v preserved /source/probe.txt
+    setfacl -m u:65534:r-- /source/probe.txt
+  '
 run_image doctor
 run_image run
 run_image verify latest --job container-files --full
@@ -89,7 +107,12 @@ run_image list --job container-files | grep -q 'docker-image-host_container-file
 run_image restore latest --job container-files --to /restore
 
 docker run --rm --read-only -v "$RESTORE_DIRECTORY:/restore:ro" \
-  --entrypoint /bin/sh "$IMAGE" -ec 'grep -qx "container round-trip" /restore/source/probe.txt'
+  --entrypoint /bin/sh "$IMAGE" -ec '
+    grep -qx "container round-trip" /restore/source/probe.txt
+    test "$(stat --format=%u:%g /restore/source/probe.txt)" = 42424:42425
+    getfattr --only-values -n user.backfort /restore/source/probe.txt | grep -qx preserved
+    getfacl --numeric --omit-header /restore/source/probe.txt | grep -qx "user:65534:r--"
+  '
 
 if docker run --rm --read-only --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
   -v "$INVALID_CONFIG_FILE:/etc/backfort/config.yaml:ro" \

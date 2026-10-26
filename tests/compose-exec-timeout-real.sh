@@ -20,7 +20,7 @@ compose() {
   docker compose --project-directory "$TEST_DIRECTORY" -f "$TEST_DIRECTORY/compose.yaml" "$@"
 }
 
-cleanup() {
+cleanup_compose_exec_timeout() {
   local result=$?
   trap - EXIT
   set +e
@@ -31,7 +31,7 @@ cleanup() {
   esac
   exit "$result"
 }
-trap cleanup EXIT
+trap cleanup_compose_exec_timeout EXIT
 
 cat >"$TEST_DIRECTORY/compose.yaml" <<'EOF'
 services:
@@ -44,6 +44,8 @@ compose up --detach probe
 
 # shellcheck source=/dev/null
 source <(sed '/^main "\$@"$/d' "$PROJECT_DIRECTORY/backfort.sh")
+# Sourcing installs the engine's EXIT trap; restore fixture ownership here.
+trap cleanup_compose_exec_timeout EXIT
 
 # A minimal stand-in for a real YAML config: only the fields
 # compose_exec_with_secret and its callees actually read.
@@ -53,7 +55,7 @@ cfg() {
     '.jobs[0].source.project_dir') printf '%s\n' "$TEST_DIRECTORY" ;;
     '.jobs[0].source.files | length') printf '1\n' ;;
     '.jobs[0].source.files[0]') printf 'compose.yaml\n' ;;
-    '.jobs[0].source.command_timeout_seconds // 3600') printf '2\n' ;;
+    '.jobs[0].source.command_timeout_seconds // 3600') printf '5\n' ;;
     '.jobs[0].source.databases[0].password_env') printf 'BACKFORT_TEST_EXEC_TIMEOUT_PW\n' ;;
     *) return 1 ;;
   esac
@@ -61,8 +63,8 @@ cfg() {
 
 export BACKFORT_TEST_EXEC_TIMEOUT_PW=irrelevant
 
-# A fast command must still succeed well within the timeout: the wrap must
-# not itself break or meaningfully delay a normal dump.
+# Allow Docker Desktop/Compose client startup within the five-second bound;
+# the wrap must still reject a long-running command inside the container.
 if ! compose_exec_with_secret 0 0 TESTVAR probe echo ok >"$TEST_DIRECTORY/fast.out"; then
   printf 'a fast in-container command must succeed under the timeout wrap\n' >&2
   exit 1
@@ -70,7 +72,7 @@ fi
 [[ $(<"$TEST_DIRECTORY/fast.out") == ok ]]
 
 # A command that ignores its terminal is bounded by the in-container timeout
-# (2s) plus its 10s kill grace, not by the sleep duration (600s).
+# (5s) plus its 10s kill grace, not by the sleep duration (600s).
 STARTED=$(date -u +%s)
 if compose_exec_with_secret 0 0 TESTVAR probe sh -c 'trap "" TERM; sleep 600'; then
   printf 'expected the long-running in-container command to be killed\n' >&2

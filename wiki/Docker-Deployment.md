@@ -10,8 +10,8 @@ The canonical image is `ghcr.io/shellharbor/backfort`. Stable releases publish
 multi-architecture manifests for `linux/amd64` and `linux/arm64`:
 
 ```bash
-docker pull ghcr.io/shellharbor/backfort:1.3.0
-docker run --rm ghcr.io/shellharbor/backfort:1.3.0 --version
+docker pull ghcr.io/shellharbor/backfort:1.4.0
+docker run --rm ghcr.io/shellharbor/backfort:1.4.0 --version
 ```
 
 Use an exact version (or an image digest) in an operational Compose file.
@@ -22,7 +22,18 @@ the maintainers configure its release credentials. GHCR remains canonical.
 
 ## What the image contains
 
-The production image is Debian-based rather than Alpine so Backfort keeps its
+Backfort 1.4.0 uses **Debian trixie-slim** and explicit POSIX `mawk`.
+All Dockerfile base stages are pinned by multi-architecture index digest.
+GNU awk is deliberately absent, with build and image tests preventing its
+return. GnuPG and `msmtp-mta` remain installed; their SQLite/GLib dependencies
+come from trixie. See the [security report](../docs/security/trixie-1.4.0.md)
+for the full unfiltered scan delta, newly introduced HIGH finding and
+verification status. Both amd64/arm64 builds and image crypto/metadata smoke
+tests pass, including non-root CI callers; the full shell suite passes on
+amd64. The Compose example and chart target 1.4.0. The security report records
+registry verification and published digests separately from local test builds.
+
+The production image retains Debian GNU userland so Backfort keeps its
 GNU tar behavior for POSIX ACLs, extended attributes, sparse files and numeric
 owners. It includes Bash, GNU core utilities, Mike Farah `yq` v4, gzip, zstd,
 age, GnuPG, Minisign, rclone, curl, msmtp, and the Docker CLI with the Compose
@@ -237,3 +248,5 @@ also build and run the real image on both supported architectures before an
 image is published. See [Troubleshooting](Troubleshooting) for common container
 mount and Compose-socket errors. Maintainers can find the durable rationale in
 [ADR-001](../docs/ADR-001-docker-distribution.md).
+The trixie/mawk security update is recorded in
+[ADR-0003](../docs/adr/0003-trixie-mawk-runtime.md).

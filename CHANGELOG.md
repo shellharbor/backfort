@@ -5,13 +5,45 @@ once a release is tagged.
 
 ## Unreleased
 
+## 1.4.0
+
+### Security
+
+- Rebased the container runtime on digest-pinned Debian trixie-slim and
+  replaced GNU awk with explicit POSIX mawk. Preserved GNU tar recovery
+  fidelity, GnuPG, SMTP and every supported backup feature; build/image tests
+  reject installed gawk. All external Dockerfile stages are pinned by digest.
+- Removed CVE-2026-40468, CVE-2026-40469, CVE-2025-7458, CVE-2026-58016 and
+  CVE-2023-45853. Full Trivy 0.75 vulnerability/secret scans on both amd64 and
+  arm64 report C/H/M/L/U 0/63/119/171/3 versus 8/107/215/192/6 in 1.2.0,
+  with zero secret findings and no vulnerability exceptions.
+- Disclosed the newly introduced, unfixed HIGH CVE-2026-24882 in seven GnuPG
+  packages and every remaining HIGH group in the complete verification report.
+
+### Changed
+
+- Synchronized application version 1.4.0, Compose image 1.4.0 and Helm chart
+  0.1.1 / appVersion 1.4.0. CLI, YAML schema and backup formats are unchanged.
+  Python distribution metadata derives the same version; PyPI publication
+  remains a separate operation.
+
+### Tests
+
+- Added real age/GPG encryption, Minisign signing and files backup/full verify/
+  staged restore with ACLs, xattrs and numeric ownership to image smoke tests.
+  Both image architectures pass, including non-root CI callers.
+- Added a separate development layer for the full 29-driver shell suite on
+  the new amd64 runtime, including real Compose PostgreSQL/MySQL recovery.
+- Corrected test-only temporary-directory permissions, Compose-timeout fixture
+  cleanup and client startup allowance, caller-owned bind mountpoints, and
+  SIGPIPE-prone version display pipelines under QEMU.
+
 ### Documentation
 
-- Added a dynamic PyPI version badge to the README, linking directly to the
-  published Backfort package so users can find its current release.
-- Expanded the README's pipx quick start with PATH setup and direct `backfort`
-  help, configuration, doctor, dry-run and backup commands; clarified virtual
-  environment command paths so no Python or shell-script prefix is needed.
+- Added the trixie/mawk runtime ADR and complete security verification report;
+  refreshed Docker/Kubernetes guidance and current image examples.
+- Added a dynamic PyPI version badge linking to the published package and
+  expanded direct CLI pipx/virtual-environment usage examples.
 
 ## 1.3.0
 

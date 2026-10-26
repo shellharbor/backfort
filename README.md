@@ -199,14 +199,20 @@ that a package is already published.
 
 ## Run Backfort in Docker
 
+Backfort **1.4.0** uses a digest-pinned Debian trixie
+runtime and POSIX `mawk`. GNU tar, GnuPG and SMTP support remain included.
+The [security verification report](docs/security/trixie-1.4.0.md) records the
+complete vulnerability counts, remaining HIGH findings and exact release
+verification status. The Compose example and Helm chart target 1.4.0.
+
 The container image is an additional distribution method, not a second backup
 engine. It runs the same `backfort.sh`, accepts the same strict YAML, and
 creates the same portable bundles as a native installation. Images are
 published for `linux/amd64` and `linux/arm64` to GitHub Container Registry:
 
 ```bash
-docker pull ghcr.io/shellharbor/backfort:1.3.0
-docker run --rm ghcr.io/shellharbor/backfort:1.3.0 --version
+docker pull ghcr.io/shellharbor/backfort:1.4.0
+docker run --rm ghcr.io/shellharbor/backfort:1.4.0 --version
 ```
 
 For a durable setup, copy the sample Compose file and its matching config into
@@ -248,8 +254,8 @@ mounted read-only. Use it only for a trusted Compose job and never for a
 normal files-only backup. The complete deployment, secret, recovery and
 upgrade guidance is in [Docker deployment](wiki/Docker-Deployment.md).
 
-Release tags are immutable exact versions such as `1.3.0`. Stable releases
-also move `1.3`, `1`, and `latest`; pin an exact version or digest for a
+Release tags are immutable exact versions such as `1.4.0`. Stable releases
+also move `1.4`, `1`, and `latest`; pin an exact version or digest for a
 repeatable run and retain the `backfort-state` volume during upgrades. Docker
 Hub publication is optional and occurs only when the repository has both
 `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` release secrets; GHCR is the

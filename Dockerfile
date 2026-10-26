@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 # Backfort relies on GNU tar semantics for ACLs, xattrs, sparse files, and
 # ownership. Debian provides the required GNU userland; Alpine/BusyBox does not.
-FROM docker:29-cli AS docker-cli
-FROM mikefarah/yq:4.54.1 AS yq
-FROM rclone/rclone:1.75.2 AS rclone
+FROM docker:29-cli@sha256:5e6baf67325a79f64ed3bed6863954d5e05d0f3d4e57cbdb14809346814bbfdb AS docker-cli
+FROM mikefarah/yq:4.54.1@sha256:4b3d9475d65571d28cbb19544d3820ec2945e4c8b2f18279394282b8dc3a592e AS yq
+FROM rclone/rclone:1.75.2@sha256:2687085f718d3c628f7fdfb77c52a1d344332aed543110bb88088f2c70d43eb5 AS rclone
 
-FROM debian:bookworm-slim
+FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 
 LABEL org.opencontainers.image.title="Backfort" \
       org.opencontainers.image.description="Recovery-first Linux backup and restore tool" \
@@ -24,14 +24,16 @@ RUN apt-get update \
         coreutils \
         curl \
         findutils \
-        gawk \
         gnupg \
         gzip \
+        mawk \
         minisign \
         msmtp-mta \
         tar \
         util-linux \
         zstd \
+    && test "$(readlink -f /usr/bin/awk)" = /usr/bin/mawk \
+    && test "$(dpkg-query -W -f='${db:Status-Status}' gawk 2>/dev/null)" != installed \
     && rm -rf /var/lib/apt/lists/* \
     && install -d -m 0700 /var/lib/backfort /var/tmp/backfort
 

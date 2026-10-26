@@ -14,6 +14,10 @@ that separate environment.
 
 ## Before installing
 
+Chart **0.1.1** targets application/image **1.4.0**, including the trixie/mawk
+security update and the same GNU metadata recovery contract. See the
+[container verification report](../docs/security/trixie-1.4.0.md).
+
 - Install in the same namespace as all source, state, destination and recovery
   PVCs and referenced Secrets. The chart never creates the application's PVC.
 - Choose a stable, unique `config.settings.host_id`. Keep the original ID and
