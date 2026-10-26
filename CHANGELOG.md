@@ -7,6 +7,10 @@ once a release is tagged.
 
 ### Documentation
 
+- Published the Python 1.4.0 wheel and sdist from the unchanged release tag
+  through Trusted Publishing; verified artifact hashes and a fresh PyPI
+  installation with real recovery. Updated current installation examples and
+  the publication runbook to keep distribution channels aligned.
 - Recorded published 1.4.0 GHCR/Docker Hub multiarch digests, successful release
   CI and complete scans of all four published variants. Added an exact Docker
   Hub pin example so deployments can use the verified registry index.

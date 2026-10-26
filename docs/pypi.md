@@ -14,10 +14,10 @@ it is a Python launcher, **not a Python rewrite** or a new backup format.
 
 ## Install and run
 
-Install Backfort 1.3.0 with pipx, keeping the launcher isolated:
+Install Backfort with pipx, keeping the launcher isolated:
 
 ```bash
-pipx install 'backfort==1.3.0'
+pipx install backfort
 backfort --version
 ```
 
@@ -25,7 +25,7 @@ Or install inside a virtual environment:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install 'backfort==1.3.0'
+.venv/bin/python -m pip install backfort
 .venv/bin/backfort --version
 .venv/bin/python -m backfort --help
 ```

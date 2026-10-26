@@ -138,11 +138,11 @@ It requires **Python 3.11+ on Linux**, plus the native Bash/GNU/yq prerequisites
 above. It is not a Python rewrite or a Windows port; use Linux Python inside
 WSL or the Docker image on Windows.
 
-Version **1.3.0** adds Python packaging without changing the native CLI or
-backup format. Install the published release into an isolated environment:
+Python packaging was introduced in **1.3.0** without changing the native CLI
+or backup format. Install the current **1.4.0** release into an isolated environment:
 
 ```bash
-pipx install 'backfort==1.3.0'
+pipx install 'backfort==1.4.0'
 pipx ensurepath
 ```
 
@@ -172,7 +172,7 @@ Alternatively, use pip inside a virtual environment:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install 'backfort==1.3.0'
+.venv/bin/python -m pip install 'backfort==1.4.0'
 .venv/bin/backfort --version
 .venv/bin/python -m backfort --help
 ```

@@ -8,10 +8,10 @@ external. Native Bash and production Docker/Helm use do not require Python.
 
 ## Install and run
 
-Install the published 1.3.0 release with pipx:
+Install the published 1.4.0 release with pipx:
 
 ```bash
-pipx install 'backfort==1.3.0'
+pipx install 'backfort==1.4.0'
 backfort --version
 ```
 
@@ -19,13 +19,13 @@ Or use pip in a virtual environment:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/python -m pip install 'backfort==1.3.0'
+.venv/bin/python -m pip install 'backfort==1.4.0'
 .venv/bin/backfort --version
 .venv/bin/python -m backfort --help
 ```
 
 If the release is not available on your index yet, install a trusted
-`v1.3.0` checkout with `.venv/bin/python -m pip install .` instead.
+`v1.4.0` checkout with `.venv/bin/python -m pip install .` instead.
 Do not install into a system-managed Python.
 For privileged backups use a deliberately protected, root-owned installation,
 not a user-writable virtual environment executed as root.
@@ -116,34 +116,53 @@ tag/CLI version/confirmed Changelog heading, and uses trusted publishing.
    in an isolated environment, then explicitly run with `pypi`. A maintainer
    may explicitly choose a first publication directly to PyPI after successful
    package/recovery checks and required CI; record that choice rather than
-   claiming TestPyPI was tested. The 1.3.0 maintainer chose that path.
+   claiming TestPyPI was tested. The maintainer chose direct PyPI publication
+   for 1.3.0 and 1.4.0 after the package checks.
 
-For this release, select tag `v1.3.0` in the Actions run dialog. From an
+For this release, select tag `v1.4.0` in the Actions run dialog. From an
 authorized GitHub CLI session, the equivalent dispatches are:
 
 ```bash
 gh workflow run pypi-publish.yml --repo shellharbor/backfort \
-  --ref v1.3.0 -f repository=testpypi
+  --ref v1.4.0 -f repository=testpypi
 # Inspect the successful TestPyPI upload and validate an isolated install first.
 gh workflow run pypi-publish.yml --repo shellharbor/backfort \
-  --ref v1.3.0 -f repository=pypi
+  --ref v1.4.0 -f repository=pypi
 ```
 
 Check the published metadata and install without fallback to another index:
 
 ```bash
-python3 -m venv /tmp/backfort-testpypi-1.3.0
-/tmp/backfort-testpypi-1.3.0/bin/python -m pip install \
-  --index-url https://test.pypi.org/simple/ --no-deps 'backfort==1.3.0'
-/tmp/backfort-testpypi-1.3.0/bin/backfort --version
+python3 -m venv /tmp/backfort-testpypi-1.4.0
+/tmp/backfort-testpypi-1.4.0/bin/python -m pip install \
+  --index-url https://test.pypi.org/simple/ --no-deps 'backfort==1.4.0'
+/tmp/backfort-testpypi-1.4.0/bin/backfort --version
 ```
 
 Use a new environment for each check and run outside the source checkout.
 For the final PyPI check, use `https://pypi.org/simple/` instead. Linux and
 external Bash/GNU/yq prerequisites still apply. Confirm the project page shows
-version `1.3.0` and both wheel and source archive; a local build, GitHub release
+version `1.4.0` and both wheel and source archive; a local build, GitHub release
 or successful workflow dispatch is not proof of publication.
 
 Versions cannot be overwritten. Files under `dist/` are local artifacts, not
 evidence of publication. The repository owner must configure index permissions.
 See [PyPI trusted publishing](https://docs.pypi.org/trusted-publishers/using-a-publisher/).
+
+## Verified 1.4.0 publication
+
+[Backfort 1.4.0](https://pypi.org/project/backfort/1.4.0/) was published from
+the unchanged `v1.4.0` tag at `5ceabc1` through
+[workflow 40355918669](https://github.com/shellharbor/backfort/actions/runs/40355918669).
+Wheel/sdist checks and an independent candidate recovery drill passed before
+the protected publish step. Both uploaded SHA-256 values match the reviewed
+workflow artifacts; a fresh Linux PyPI install outside the checkout passes
+console/module/resource checks and real backup/full verify/staged restore.
+TestPyPI was not used for this release. The TestPyPI commands above are
+optional workflow examples, not evidence of a TestPyPI upload.
+The immutable 1.4.0 artifacts retain their release-tag overview, including
+its original pinned 1.3.0 installation example. Use the current 1.4.0 install
+commands on this page; the package and release tag are not rewritten.
+
+- Wheel: `fd7ffcc292447931abac2167896b0f2a821da73db6b8bb5a8de771eaef25ae1c`.
+- Source archive: `42c9d24ffd5aa76b5372b278a54e22b027477099812f049eff73349ab20ed80a`.

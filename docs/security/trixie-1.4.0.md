@@ -360,8 +360,10 @@ Local evidence is retained outside Git in
 
 The owner-authorized v1.4.0 tag and both image registries are published and
 verified as recorded above. The new GnuPG HIGH finding was disclosed before
-approval and remains in every scan without an exception. This task does not
-publish PyPI 1.4.0; Python publishing remains a separate maintainer operation.
+approval and remains in every scan without an exception. PyPI 1.4.0 was
+subsequently published through its separate trusted-publisher workflow; see
+[Python and PyPI](../../wiki/Python-and-PyPI.md#verified-140-publication).
+The Python package does not bundle or upgrade the host's system libraries.
 
 Filaver Data's tag/digest update, rebuild removal, bookworm pins and policy
 exceptions are explicitly a separate task.
